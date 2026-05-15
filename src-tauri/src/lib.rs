@@ -196,6 +196,13 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(hotword_manager.clone());
     let prompt_manager = Arc::new(managers::prompt::PromptManager::new(app_handle));
     app_handle.manage(prompt_manager.clone());
+    let task_clusters_manager = Arc::new(crate::managers::task_clusters::TaskClustersManager::new(
+        db_path.clone(),
+    ));
+    app_handle.manage(task_clusters_manager.clone());
+    let cluster_feedback_manager =
+        Arc::new(crate::managers::cluster_feedback::ClusterFeedbackManager::new(db_path.clone()));
+    app_handle.manage(cluster_feedback_manager.clone());
     let free_models_cache = Arc::new(crate::managers::free_models::FreeModelsCache::new(
         app_data_dir.clone(),
     ));
@@ -970,6 +977,16 @@ pub fn run() {
             commands::summary::delete_summary_ai_history_entry,
             commands::summary::generate_summary_ai_analysis,
             commands::summary::export_summary,
+            commands::task_clusters::get_task_clusters_by_date,
+            commands::task_clusters::generate_task_clusters,
+            commands::task_clusters::update_task_cluster_field,
+            commands::task_clusters::split_task_cluster,
+            commands::task_clusters::merge_task_clusters,
+            commands::task_clusters::delete_task_cluster,
+            commands::cluster_feedback::add_cluster_feedback,
+            commands::cluster_feedback::list_cluster_feedback,
+            commands::cluster_feedback::list_recent_negative_cluster_feedback,
+            commands::cluster_feedback::delete_cluster_feedback,
             commands::free_models::get_free_models,
             commands::free_models::refresh_free_models_cache,
             commands::text::optimize_text_with_llm,

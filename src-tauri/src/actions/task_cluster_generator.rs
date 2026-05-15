@@ -1,6 +1,3 @@
-// Helpers and orchestrator consumed by T8 command layer; allow until callers land.
-#![allow(dead_code)]
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -205,7 +202,12 @@ pub struct GenerateClustersInput {
 /// Result of `generate_task_clusters`.
 pub struct GenerateClustersResult {
     pub clusters: Vec<TaskCluster>,
+    /// Why the LLM call was skipped, when applicable (e.g. cache hit, locked).
+    /// Surfaced for debugging/UI but the current command path only returns `clusters`.
+    #[allow(dead_code)]
     pub skipped_reason: Option<String>,
+    /// True when the LLM was actually invoked. Reserved for future telemetry.
+    #[allow(dead_code)]
     pub llm_called: bool,
 }
 

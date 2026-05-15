@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod cluster_feedback;
 #[allow(dead_code)]
 pub mod daily_vocabulary;
 pub mod free_models;

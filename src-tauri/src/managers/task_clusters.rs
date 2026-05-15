@@ -193,6 +193,9 @@ impl TaskClustersManager {
         }
     }
 
+    /// Reserved for future single-cluster fetch (no command currently uses it,
+    /// but tests and prospective callers reference it).
+    #[allow(dead_code)]
     pub fn get_by_id(&self, id: &str) -> Result<Option<TaskCluster>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare("SELECT * FROM task_clusters WHERE id=?")?;

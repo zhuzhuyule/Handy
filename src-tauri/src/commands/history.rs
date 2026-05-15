@@ -143,12 +143,36 @@ pub async fn get_audio_path_by_history_id(
 pub async fn delete_history_entry(
     _app: AppHandle,
     history_manager: State<'_, Arc<HistoryManager>>,
+    task_clusters: State<'_, Arc<crate::managers::task_clusters::TaskClustersManager>>,
     id: i64,
 ) -> Result<(), String> {
+    // Capture duration before deletion so we can subtract it from any task
+    // clusters that referenced this history row.
+    let duration_ms = history_manager
+        .get_entry_by_id(id)
+        .await
+        .map_err(|e| e.to_string())?
+        .and_then(|entry| entry.duration_ms)
+        .unwrap_or(0);
+
     history_manager
         .delete_entry(id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Cascade: drop the deleted id from every task cluster's
+    // source_history_ids and decrement their counts/durations. Failures here
+    // are non-fatal — they leave stale ids in cluster JSON that the next
+    // regenerate will overwrite. Only log; never propagate.
+    if let Err(e) = task_clusters.remove_history_id_from_all_clusters(id, duration_ms) {
+        log::warn!(
+            "[cascade] Failed to clean task_clusters for deleted history id={}: {}",
+            id,
+            e
+        );
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

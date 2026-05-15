@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tauri::AppHandle;
 
 pub mod post_process;
+pub mod task_cluster_generator;
 mod transcribe;
 
 pub(crate) use transcribe::compute_change_percent;

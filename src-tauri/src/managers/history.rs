@@ -1777,6 +1777,72 @@ impl HistoryManager {
         Ok((entries, total_count))
     }
 
+    /// Return all non-deleted transcription rows whose timestamp falls within
+    /// the local-day window for the given `YYYY-MM-DD` date.
+    ///
+    /// The date is interpreted in the local timezone (matching the dashboard's
+    /// `new Date(day + "T00:00:00")` convention). Used by the task clustering
+    /// pipeline to feed candidate entries to the LLM.
+    pub async fn get_entries_for_date(&self, date: &str) -> Result<Vec<HistoryEntry>> {
+        use chrono::NaiveDate;
+        let nd = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map_err(|e| anyhow::anyhow!("invalid date '{}': {}", date, e))?;
+        let start_local = Local
+            .from_local_datetime(&nd.and_hms_opt(0, 0, 0).expect("00:00:00 is valid"))
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("ambiguous/invalid local start for {}", date))?;
+        let end_local_dt = nd
+            .succ_opt()
+            .ok_or_else(|| anyhow::anyhow!("date {} has no successor", date))?
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is valid");
+        let end_local = Local
+            .from_local_datetime(&end_local_dt)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("ambiguous/invalid local end for {}", date))?;
+        let start_ts: i64 = start_local.timestamp();
+        let end_ts: i64 = end_local.timestamp() - 1;
+
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, streaming_text, streaming_asr_model, post_processed_text, post_process_prompt, post_process_prompt_id, post_process_model, duration_ms, char_count, corrected_char_count, transcription_ms, language, asr_model, app_name, window_title, post_process_history, token_count, llm_call_count, post_process_rejected, deleted FROM transcription_history WHERE timestamp >= ?1 AND timestamp <= ?2 AND deleted = 0 ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt.query_map(params![start_ts, end_ts], |row| {
+            Ok(HistoryEntry {
+                id: row.get("id")?,
+                file_name: row.get("file_name")?,
+                timestamp: row.get("timestamp")?,
+                saved: row.get("saved")?,
+                title: row.get("title")?,
+                transcription_text: row.get("transcription_text")?,
+                streaming_text: row.get("streaming_text")?,
+                streaming_asr_model: row.get("streaming_asr_model")?,
+                post_processed_text: row.get("post_processed_text")?,
+                post_process_prompt: row.get("post_process_prompt")?,
+                post_process_prompt_id: row.get("post_process_prompt_id")?,
+                post_process_model: row.get("post_process_model")?,
+                duration_ms: row.get("duration_ms")?,
+                char_count: row.get("char_count")?,
+                corrected_char_count: row.get("corrected_char_count")?,
+                transcription_ms: row.get("transcription_ms")?,
+                language: row.get("language")?,
+                asr_model: row.get("asr_model")?,
+                app_name: row.get("app_name")?,
+                window_title: row.get("window_title")?,
+                post_process_history: row.get("post_process_history")?,
+                token_count: row.get("token_count")?,
+                llm_call_count: row.get("llm_call_count")?,
+                post_process_rejected: row.get("post_process_rejected")?,
+                deleted: row.get("deleted")?,
+            })
+        })?;
+        let mut entries = Vec::new();
+        for r in rows {
+            entries.push(r?);
+        }
+        Ok(entries)
+    }
+
     pub async fn toggle_saved_status(&self, id: i64) -> Result<()> {
         let conn = self.get_connection()?;
 

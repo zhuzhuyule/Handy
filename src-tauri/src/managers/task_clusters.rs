@@ -128,6 +128,13 @@ impl TaskClustersManager {
 
     pub fn upsert(&self, c: &TaskCluster) -> Result<()> {
         let conn = self.get_connection()?;
+        Self::upsert_in_conn(&conn, c)
+    }
+
+    /// Internal upsert that runs against an existing `Connection` (which may
+    /// be a transaction). Allows multi-step manager operations to batch
+    /// writes atomically.
+    fn upsert_in_conn(conn: &Connection, c: &TaskCluster) -> Result<()> {
         conn.execute(
             "INSERT INTO task_clusters (
                 id, summary_id, date, title, status, time_span,
@@ -174,6 +181,16 @@ impl TaskClustersManager {
             ],
         )?;
         Ok(())
+    }
+
+    fn get_by_id_in_conn(conn: &Connection, id: &str) -> Result<Option<TaskCluster>> {
+        let mut stmt = conn.prepare("SELECT * FROM task_clusters WHERE id=?")?;
+        let mut rows = stmt.query([id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(Self::row_to_cluster(row)?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn get_by_id(&self, id: &str) -> Result<Option<TaskCluster>> {
@@ -230,6 +247,10 @@ impl TaskClustersManager {
 
     /// Extract `extract_ids` from cluster `cluster_id` into a new cluster `new_title`,
     /// transferring `extracted_duration_ms` of total_duration_ms from original to new.
+    ///
+    /// Both upserts run inside a single transaction so a partial failure cannot
+    /// leave the original cluster with `source_history_ids` removed but no new
+    /// cluster created (which would orphan history rows).
     pub fn split(
         &self,
         cluster_id: &str,
@@ -240,8 +261,10 @@ impl TaskClustersManager {
         if extract_ids.is_empty() {
             anyhow::bail!("extract_ids cannot be empty");
         }
-        let mut original = self
-            .get_by_id(cluster_id)?
+        let mut conn = self.get_connection()?;
+        let tx = conn.transaction()?;
+
+        let mut original = Self::get_by_id_in_conn(&tx, cluster_id)?
             .ok_or_else(|| anyhow::anyhow!("cluster {} not found", cluster_id))?;
         let extract_set: std::collections::HashSet<i64> = extract_ids.iter().copied().collect();
         for id in extract_ids {
@@ -301,12 +324,16 @@ impl TaskClustersManager {
         }
         original.updated_at = now;
 
-        self.upsert(&original)?;
-        self.upsert(&new_cluster)?;
+        Self::upsert_in_conn(&tx, &original)?;
+        Self::upsert_in_conn(&tx, &new_cluster)?;
+        tx.commit()?;
         Ok(new_id)
     }
 
     /// Merge `source_cluster_ids` into `target_cluster_id`. Target keeps its title.
+    ///
+    /// All source deletions plus the target upsert happen in a single
+    /// transaction so concurrent readers never observe a half-merged state.
     pub fn merge(&self, target_cluster_id: &str, source_cluster_ids: &[String]) -> Result<()> {
         if source_cluster_ids.is_empty() {
             anyhow::bail!("source_cluster_ids cannot be empty");
@@ -314,8 +341,10 @@ impl TaskClustersManager {
         if source_cluster_ids.iter().any(|s| s == target_cluster_id) {
             anyhow::bail!("cannot merge cluster into itself");
         }
-        let mut target = self
-            .get_by_id(target_cluster_id)?
+        let mut conn = self.get_connection()?;
+        let tx = conn.transaction()?;
+
+        let mut target = Self::get_by_id_in_conn(&tx, target_cluster_id)?
             .ok_or_else(|| anyhow::anyhow!("target {} not found", target_cluster_id))?;
         let now = chrono::Utc::now().timestamp_millis();
 
@@ -326,8 +355,7 @@ impl TaskClustersManager {
         let mut added_duration = 0_i64;
 
         for sid in source_cluster_ids {
-            let s = self
-                .get_by_id(sid)?
+            let s = Self::get_by_id_in_conn(&tx, sid)?
                 .ok_or_else(|| anyhow::anyhow!("source {} not found", sid))?;
             for id in &s.source_history_ids {
                 if !merged_ids.contains(id) {
@@ -350,7 +378,7 @@ impl TaskClustersManager {
                 }
             }
             added_duration += s.total_duration_ms;
-            self.delete(sid)?;
+            tx.execute("DELETE FROM task_clusters WHERE id=?", [sid])?;
         }
 
         target.source_history_ids = merged_ids;
@@ -364,60 +392,66 @@ impl TaskClustersManager {
             target.user_modified_fields.push("merged".into());
         }
         target.updated_at = now;
-        self.upsert(&target)?;
+        Self::upsert_in_conn(&tx, &target)?;
+        tx.commit()?;
         Ok(())
     }
 
     /// Called when a transcription_history row is deleted. Removes the id from all
     /// clusters' source_history_ids and decrements their counts/durations.
     /// Does NOT flip is_user_modified.
+    ///
+    /// All matching cluster rows update inside a single transaction so a
+    /// crash midway can never leave only some clusters with the stale id.
     pub fn remove_history_id_from_all_clusters(
         &self,
         history_id: i64,
         history_duration_ms: i64,
     ) -> Result<()> {
-        let conn = self.get_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, source_history_ids_json, total_duration_ms, entry_count
-             FROM task_clusters
-             WHERE source_history_ids_json LIKE ?",
-        )?;
-        let pattern = format!("%{}%", history_id);
-        let mut rows = stmt.query([pattern])?;
-
         struct UpdateRow {
             id: String,
             new_ids: Vec<i64>,
             new_duration: i64,
             new_count: i64,
         }
-        let mut updates: Vec<UpdateRow> = Vec::new();
 
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            let json: String = row.get(1)?;
-            let duration: i64 = row.get(2)?;
-            let _count: i64 = row.get(3)?;
-            let ids: Vec<i64> = serde_json::from_str(&json).unwrap_or_default();
-            if !ids.contains(&history_id) {
-                continue;
+        let mut conn = self.get_connection()?;
+        let tx = conn.transaction()?;
+
+        let mut updates: Vec<UpdateRow> = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT id, source_history_ids_json, total_duration_ms, entry_count
+                 FROM task_clusters
+                 WHERE source_history_ids_json LIKE ?",
+            )?;
+            let pattern = format!("%{}%", history_id);
+            let mut rows = stmt.query([pattern])?;
+
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                let json: String = row.get(1)?;
+                let duration: i64 = row.get(2)?;
+                let _count: i64 = row.get(3)?;
+                let ids: Vec<i64> = serde_json::from_str(&json).unwrap_or_default();
+                if !ids.contains(&history_id) {
+                    continue;
+                }
+                let new_ids: Vec<i64> = ids.into_iter().filter(|id| *id != history_id).collect();
+                let new_count = new_ids.len() as i64;
+                let new_duration = (duration - history_duration_ms).max(0);
+                updates.push(UpdateRow {
+                    id,
+                    new_ids,
+                    new_duration,
+                    new_count,
+                });
             }
-            let new_ids: Vec<i64> = ids.into_iter().filter(|id| *id != history_id).collect();
-            let new_count = new_ids.len() as i64;
-            let new_duration = (duration - history_duration_ms).max(0);
-            updates.push(UpdateRow {
-                id,
-                new_ids,
-                new_duration,
-                new_count,
-            });
         }
-        drop(rows);
-        drop(stmt);
 
         let now = chrono::Utc::now().timestamp_millis();
         for u in updates {
-            conn.execute(
+            tx.execute(
                 "UPDATE task_clusters
                  SET source_history_ids_json=?, total_duration_ms=?, entry_count=?, updated_at=?
                  WHERE id=?",
@@ -430,6 +464,7 @@ impl TaskClustersManager {
                 ],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -723,6 +758,34 @@ mod tests {
         assert!(merged.is_user_modified);
 
         assert!(m.get_by_id(&b.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_split_is_atomic_failure_leaves_original_intact() {
+        // Atomicity regression: if split returns Err, the original cluster
+        // must NOT have been partially mutated (e.g. extracted ids removed
+        // but no new cluster written). We trigger the post-validation bail
+        // path with `extract_ids.len() == source_history_ids.len()`.
+        let (_tmp, m) = setup_db();
+        let mut a = make_cluster("2026-05-15", 1);
+        a.source_history_ids = vec![10, 11, 12];
+        a.entry_count = 3;
+        a.total_duration_ms = 3000;
+        m.upsert(&a).unwrap();
+
+        let result = m.split(&a.id, &[10, 11, 12], "ShouldFail", 3000);
+        assert!(result.is_err(), "extracting all ids must fail");
+
+        // Original cluster must still be intact
+        let reloaded = m.get_by_id(&a.id).unwrap().unwrap();
+        assert_eq!(reloaded.source_history_ids, vec![10, 11, 12]);
+        assert_eq!(reloaded.entry_count, 3);
+        assert_eq!(reloaded.total_duration_ms, 3000);
+        assert!(!reloaded.is_user_modified);
+
+        // No phantom rows were created on the date.
+        let all = m.get_by_date("2026-05-15").unwrap();
+        assert_eq!(all.len(), 1);
     }
 
     #[test]

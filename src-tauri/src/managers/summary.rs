@@ -696,6 +696,35 @@ impl SummaryManager {
         })
     }
 
+    /// Resolve the daily `summary_id` for a `YYYY-MM-DD` date in local time,
+    /// creating a placeholder summary row if one does not yet exist.
+    ///
+    /// The date string is interpreted in the *local* timezone so it matches
+    /// the windows the dashboard frontend uses (it builds
+    /// `new Date(day + "T00:00:00")`, which is local-midnight).
+    pub async fn get_or_create_summary_id_for_date(&self, date: &str) -> Result<i64> {
+        use chrono::{Local, NaiveDate, TimeZone};
+        let nd = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map_err(|e| anyhow::anyhow!("invalid date '{}': {}", date, e))?;
+        let start_local = Local
+            .from_local_datetime(&nd.and_hms_opt(0, 0, 0).expect("00:00:00 is valid"))
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("ambiguous/invalid local start for {}", date))?;
+        let end_local_dt = nd
+            .succ_opt()
+            .ok_or_else(|| anyhow::anyhow!("date {} has no successor", date))?
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is valid");
+        let end_local = Local
+            .from_local_datetime(&end_local_dt)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("ambiguous/invalid local end for {}", date))?;
+        let start_ts = start_local.timestamp();
+        let end_ts = end_local.timestamp() - 1;
+        let summary = self.get_or_create_summary("day", start_ts, end_ts)?;
+        Ok(summary.id)
+    }
+
     /// Update AI-generated content for a summary and append to history
     pub fn update_summary_ai_content(
         &self,

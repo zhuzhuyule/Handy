@@ -29,7 +29,7 @@ tauri_panel! {
 // This is the *window* size; the overlay UI inside can be smaller and is centered.
 // We keep this large enough to support realtime transcription with internal scrolling.
 const OVERLAY_WIDTH: f64 = 540.0;
-const OVERLAY_HEIGHT: f64 = 160.0;
+const OVERLAY_HEIGHT: f64 = 300.0;
 const CURSOR_VERTICAL_OFFSET: f64 = 18.0;
 
 /// Monotonically-increasing generation bumped by every `show_*`/`hide_*`

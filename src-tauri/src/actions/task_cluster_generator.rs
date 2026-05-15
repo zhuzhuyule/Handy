@@ -71,10 +71,11 @@ pub fn render_entries_block(entries: &[ClusterableEntry]) -> String {
 }
 
 fn format_hhmm(ms: i64) -> String {
-    let secs = ms / 1000;
-    let h = (secs / 3600) % 24;
-    let m = (secs / 60) % 60;
-    format!("{:02}:{:02}", h, m)
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_millis_opt(ms).single() {
+        Some(dt) => dt.format("%H:%M").to_string(),
+        None => "??:??".to_string(),
+    }
 }
 
 /// Render the protected cluster summary block.
@@ -148,14 +149,37 @@ pub fn sanitize_outputs(
     outputs
         .into_iter()
         .map(|mut o| {
+            let original_ids_len = o.source_history_ids.len();
             o.source_history_ids.retain(|id| valid_ids.contains(id));
+            if o.source_history_ids.len() < original_ids_len {
+                log::debug!(
+                    "task_cluster: dropped {} unknown source_history_ids from cluster '{}'",
+                    original_ids_len - o.source_history_ids.len(),
+                    o.title
+                );
+            }
             if !ALLOWED_STATUSES.contains(&o.status.as_str()) {
+                log::warn!(
+                    "task_cluster: coerced unknown status '{}' -> '进行中' for cluster '{}'",
+                    o.status,
+                    o.title
+                );
                 o.status = "进行中".to_string();
             }
             o.entry_count = o.source_history_ids.len() as i64;
             o
         })
-        .filter(|o| !o.source_history_ids.is_empty())
+        .filter(|o| {
+            if o.source_history_ids.is_empty() {
+                log::warn!(
+                    "task_cluster: dropped cluster '{}' — no valid source_history_ids after sanitization",
+                    o.title
+                );
+                false
+            } else {
+                true
+            }
+        })
         .collect()
 }
 
@@ -255,6 +279,31 @@ mod tests {
         }];
         let out = sanitize_outputs(inp, &valid);
         assert_eq!(out[0].status, "进行中");
+    }
+
+    #[test]
+    fn test_format_hhmm_uses_local_time_and_pads() {
+        use chrono::TimeZone;
+        // 1970-01-01 00:00:00 UTC — under non-UTC offset will not be 00:00.
+        // Lock the format/zero-pad behavior using a known offset-from-noon.
+        // Choose a timestamp that should map to local 12:34 (use Local::now-derived to be tz-portable).
+        let now = chrono::Local::now();
+        let target = now.date_naive().and_hms_opt(12, 34, 0).unwrap();
+        let target_ms = chrono::Local
+            .from_local_datetime(&target)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(format_hhmm(target_ms), "12:34");
+
+        // Same-day 01:05
+        let target = now.date_naive().and_hms_opt(1, 5, 0).unwrap();
+        let target_ms = chrono::Local
+            .from_local_datetime(&target)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(format_hhmm(target_ms), "01:05");
     }
 
     #[test]

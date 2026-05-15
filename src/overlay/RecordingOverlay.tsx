@@ -828,11 +828,15 @@ const RecordingOverlay: React.FC<RecordingOverlayProps> = ({
               className="skill-confirmation"
               align="center"
             >
-              {/* Prompt + skill name + confirm text — tight group */}
+              {/* Prompt + skill name + confirm text — tight group.
+                  Marked as a drag region so users can reposition the overlay
+                  by grabbing this header area. Buttons and preview content
+                  sit outside this Flex and remain clickable. */}
               <Flex
                 direction="column"
                 align="center"
                 className="skill-confirm-prompt"
+                data-tauri-drag-region
               >
                 <Text className="prompt-text">
                   {t("overlay.skillConfirmation.detectedSelection")}

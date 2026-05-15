@@ -396,11 +396,23 @@
   grid-template-columns: 1fr;
   border-radius: 16px;
   padding: 10px 14px;
+  /* Re-enable pointer events for the confirmation UI. The base
+     .recording-overlay sets pointer-events: none for the recording-state
+     visual, which is inherited by all descendants and blocks button clicks. */
+  pointer-events: auto;
 }
 
 .recording-overlay.has-skill-confirm .overlay-left,
 .recording-overlay.has-skill-confirm .overlay-right {
   display: none;
+}
+
+/* Drag handle hint on the prompt area (data-tauri-drag-region is set in JSX) */
+.recording-overlay.has-skill-confirm .skill-confirm-prompt {
+  cursor: grab;
+}
+.recording-overlay.has-skill-confirm .skill-confirm-prompt:active {
+  cursor: grabbing;
 }
 
 /* Rewrite count badge — replaces icon in rewrite mode */

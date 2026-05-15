@@ -719,8 +719,17 @@ impl ShortcutAction for TranscribeAction {
         change_tray_icon(app, TrayIconState::Recording);
         if shortcut_str == "review-window-local" {
             let rewrite_count = crate::review_window::increment_rewrite_count();
+            // Marks the entire rewrite lifecycle (recording + pipeline) so the
+            // global ESC handler knows to spare the review window.
+            crate::review_window::set_review_rewrite_in_progress(true);
+            let _ = app.emit("review-rewrite-state", true);
             show_recording_overlay_rewrite(app, rewrite_count);
         } else {
+            // A non-rewrite recording is taking over — clear any stale rewrite
+            // flag left by a previous run that was preempted before its
+            // FinishGuard could reset it.
+            crate::review_window::set_review_rewrite_in_progress(false);
+            let _ = app.emit("review-rewrite-state", false);
             show_recording_overlay(app);
         }
 
@@ -861,6 +870,13 @@ impl ShortcutAction for TranscribeAction {
                     let rm = self.app.state::<Arc<AudioRecordingManager>>();
                     if rm.get_current_transcription_id() == self.transcription_id {
                         shortcut::unregister_cancel_shortcut(&self.app);
+                        // Mirror the shortcut-unregister gate: only this run's
+                        // own end may clear the rewrite flag. If a newer run
+                        // preempted us, it owns the flag now.
+                        if crate::review_window::is_review_rewrite_in_progress() {
+                            crate::review_window::set_review_rewrite_in_progress(false);
+                            let _ = self.app.emit("review-rewrite-state", false);
+                        }
                     }
 
                     // Always notify coordinator that processing is done

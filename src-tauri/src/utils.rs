@@ -153,8 +153,27 @@ pub fn cancel_current_operation(app: &AppHandle) {
         }
     }
 
-    info!("Initiating operation cancellation...");
-    cancel_current_operation_inner(app, true, true);
+    // During a voice rewrite (recording or its pipeline post-process), ESC
+    // should only abort the rewrite attempt — the prior review content must
+    // survive so the user can retry without losing their edits.
+    let in_rewrite = crate::review_window::is_review_rewrite_in_progress();
+    if in_rewrite {
+        info!("Cancelling rewrite — keeping review window open");
+    } else {
+        info!("Initiating operation cancellation...");
+    }
+    cancel_current_operation_inner(app, true, !in_rewrite);
+
+    // FinishGuard normally clears the rewrite flag, but it only exists once
+    // `TranscribeAction::stop()` has spawned the pipeline task. If the user
+    // hits ESC mid-recording (before stop fires), no guard ever runs and the
+    // flag would stay true forever, freezing the review window's close button
+    // and webview ESC handler. Clear here as the cancel-path backstop and let
+    // the frontend know so its `rewriteActiveRef` returns to false.
+    if in_rewrite {
+        crate::review_window::set_review_rewrite_in_progress(false);
+        let _ = app.emit("review-rewrite-state", false);
+    }
 
     info!("Operation cancellation completed - returned to idle state");
 }

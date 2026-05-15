@@ -90,6 +90,11 @@ export const REVIEW_WINDOW_INLINE_APPLY = "review-window-inline-apply";
 /** Replace the entire Review window document with rewritten text */
 export const REVIEW_WINDOW_REWRITE_APPLY = "review-window-rewrite-apply";
 
+/** Boolean payload — voice rewrite recording + pipeline is in progress.
+ *  Emitted true at recording start, false when its FinishGuard ends.
+ *  Review window listens to suppress ESC-close behaviour while active. */
+export const REVIEW_REWRITE_STATE = "review-rewrite-state";
+
 /** Refocus the currently active editable control inside a Votype-owned window */
 export const VOTYPE_REFOCUS_ACTIVE_INPUT = "votype-refocus-active-input";
 
@@ -130,6 +135,7 @@ export const TauriEvents = {
   VOTYPE_LOCAL_INSERT,
   REVIEW_WINDOW_INLINE_APPLY,
   REVIEW_WINDOW_REWRITE_APPLY,
+  REVIEW_REWRITE_STATE,
   VOTYPE_REFOCUS_ACTIVE_INPUT,
 } as const;
 

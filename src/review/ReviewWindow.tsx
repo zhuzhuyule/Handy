@@ -26,6 +26,7 @@ import React, {
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  REVIEW_REWRITE_STATE,
   REVIEW_WINDOW_INLINE_APPLY,
   REVIEW_WINDOW_REWRITE_APPLY,
   VOTYPE_REFOCUS_ACTIVE_INPUT,
@@ -581,6 +582,11 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
   const insertOriginalRef = useRef<() => void>(() => {});
   const cancelRef = useRef<() => void>(() => {});
   const translateRef = useRef<() => void>(() => {});
+  // True while a voice-rewrite recording (or its pipeline post-process) is in
+  // flight. Set by the Rust-side `review-rewrite-state` event. We use a ref
+  // (not a state-only value) so the gate inside `handleCancel` reads the
+  // latest value without forcing the callback to re-create on every change.
+  const rewriteActiveRef = useRef(false);
   // Cmd+Enter routes here: inserts English when translation is available,
   // otherwise falls into "activate editing" (focus polish editor).
   const metaEnterRef = useRef<() => void>(() => {});
@@ -1370,6 +1376,12 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
 
   const handleCancel = useCallback(() => {
     if (isSubmitting) return;
+    if (rewriteActiveRef.current) {
+      // Voice rewrite is in flight — the global ESC handler is already
+      // cancelling the recording / pipeline. Don't also close the review;
+      // the user wants their prior content preserved for retry.
+      return;
+    }
     if (hasEdits && !pendingClose) {
       setPendingClose(true);
       return;
@@ -1593,6 +1605,24 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
       unlisten?.();
     };
   }, [replaceEditorDocument]);
+
+  // Track voice-rewrite lifecycle so handleCancel can short-circuit while a
+  // rewrite is in flight. Backend emits true on rewrite-recording start,
+  // false from FinishGuard.drop (covers success / cancel / panic).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<boolean>(REVIEW_REWRITE_STATE, (event) => {
+      rewriteActiveRef.current = !!event.payload;
+    }).then((detach) => {
+      if (disposed) detach();
+      else unlisten = detach;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;

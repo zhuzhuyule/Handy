@@ -216,25 +216,43 @@ pub fn focus_overlay(app: AppHandle) {
     use crate::ManagedPendingSkillConfirmation;
     use tauri::Manager;
 
-    let active_window = crate::active_window::fetch_active_window().ok();
-    let votype_mode = crate::window_context::resolve_votype_input_mode(
-        active_window.as_ref().map(|info| info.app_name.as_str()),
-        active_window.as_ref().map(|info| info.title.as_str()),
-        crate::review_window::is_review_editor_active(),
-        false,
-    );
+    // When a skill confirmation is pending, the overlay carries interactive
+    // Confirm/Cancel buttons that the user MUST be able to operate. Bypass the
+    // usual "don't steal focus from Votype" guard in this case — without focus
+    // the panel won't receive keyboard events and mouse clicks may not land on
+    // the right window. The Votype-window skip below only protects the
+    // passive recording overlay where focus theft would be intrusive.
+    let has_pending_skill =
+        if let Some(pending_state) = app.try_state::<ManagedPendingSkillConfirmation>() {
+            pending_state
+                .lock()
+                .map(|g| g.skill_id.is_some())
+                .unwrap_or(false)
+        } else {
+            false
+        };
 
-    if matches!(
-        votype_mode,
-        crate::window_context::VotypeInputMode::MainPolishInput
-            | crate::window_context::VotypeInputMode::MainSelectedEdit
-            | crate::window_context::VotypeInputMode::ReviewRewrite
-    ) {
-        log::info!(
-            "[Overlay] Skip focus_overlay while Votype window is active (mode={:?})",
-            votype_mode
+    if !has_pending_skill {
+        let active_window = crate::active_window::fetch_active_window().ok();
+        let votype_mode = crate::window_context::resolve_votype_input_mode(
+            active_window.as_ref().map(|info| info.app_name.as_str()),
+            active_window.as_ref().map(|info| info.title.as_str()),
+            crate::review_window::is_review_editor_active(),
+            false,
         );
-        return;
+
+        if matches!(
+            votype_mode,
+            crate::window_context::VotypeInputMode::MainPolishInput
+                | crate::window_context::VotypeInputMode::MainSelectedEdit
+                | crate::window_context::VotypeInputMode::ReviewRewrite
+        ) {
+            log::info!(
+                "[Overlay] Skip focus_overlay while Votype window is active (mode={:?})",
+                votype_mode
+            );
+            return;
+        }
     }
 
     // Set UI visible flag so global ESC can skip its own handler

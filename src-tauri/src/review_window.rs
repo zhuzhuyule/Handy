@@ -90,6 +90,12 @@ static REVIEW_WINDOW_READY: AtomicBool = AtomicBool::new(false);
 static REVIEW_WINDOW_FORCED_ACTIVATION: AtomicBool = AtomicBool::new(false);
 static REVIEW_WINDOW_FOCUS_TOKEN: AtomicU64 = AtomicU64::new(0);
 static REVIEW_WINDOW_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// True from the moment a `review-window-local` (voice rewrite) recording
+/// starts until its async transcribe + post-process pipeline finishes (success,
+/// cancel, or panic). Used by `cancel_current_operation` to keep the review
+/// window open when the user hits ESC to abort the rewrite — the prior review
+/// content should survive a cancelled rewrite attempt.
+static REVIEW_REWRITE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static HIDDEN_WINDOWS_BEFORE_REVIEW: Lazy<Mutex<HashSet<String>>> =
     Lazy::new(|| Mutex::new(HashSet::new()));
 static PENDING_REVIEW_PAYLOAD: Lazy<Mutex<Option<ReviewWindowPayload>>> =
@@ -729,6 +735,14 @@ pub fn get_last_active_window() -> Option<ActiveWindowInfo> {
 
 pub fn is_review_window_active() -> bool {
     REVIEW_WINDOW_ACTIVE.load(Ordering::SeqCst)
+}
+
+pub fn set_review_rewrite_in_progress(active: bool) {
+    REVIEW_REWRITE_IN_PROGRESS.store(active, Ordering::SeqCst);
+}
+
+pub fn is_review_rewrite_in_progress() -> bool {
+    REVIEW_REWRITE_IN_PROGRESS.load(Ordering::SeqCst)
 }
 
 pub fn set_review_editor_active(active: bool) {

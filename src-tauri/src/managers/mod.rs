@@ -11,6 +11,7 @@ pub mod post_processing;
 pub mod prompt;
 pub mod skill;
 pub mod summary;
+// TODO: remove #[allow(dead_code)] after T9 wires up commands
 #[allow(dead_code)]
 pub mod task_clusters;
 pub mod transcription;

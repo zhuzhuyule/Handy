@@ -18,6 +18,7 @@ pub struct DailyOverview {
     pub next_focus: String,
 }
 
+/// DEPRECATED: replaced by `crate::managers::task_clusters::TaskCluster` (v2 with UUID + source_history_ids). Will be removed in T22.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TaskCluster {
     pub title: String,

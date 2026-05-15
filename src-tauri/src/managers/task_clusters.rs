@@ -1,34 +1,33 @@
 use anyhow::Result;
 use rusqlite::Connection;
-use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-static MIGRATIONS: &[M] = &[M::up(
-    "CREATE TABLE IF NOT EXISTS task_clusters (
-            id TEXT PRIMARY KEY,
-            summary_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            title TEXT NOT NULL,
-            status TEXT NOT NULL,
-            time_span TEXT,
-            apps_json TEXT NOT NULL,
-            source_history_ids_json TEXT NOT NULL,
-            total_duration_ms INTEGER NOT NULL,
-            entry_count INTEGER NOT NULL,
-            summary TEXT,
-            blockers_json TEXT NOT NULL,
-            next_step TEXT,
-            keywords_json TEXT NOT NULL,
-            is_user_modified INTEGER NOT NULL DEFAULT 0,
-            user_modified_fields TEXT,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-         CREATE INDEX IF NOT EXISTS idx_task_clusters_date ON task_clusters(date);
-         CREATE INDEX IF NOT EXISTS idx_task_clusters_summary ON task_clusters(summary_id);",
-)];
+/// SQL statements for creating the task_clusters table and its indexes.
+/// These are applied as a single migration in history.rs MIGRATIONS array.
+pub const MIGRATION_SQL: &str = "CREATE TABLE IF NOT EXISTS task_clusters (
+    id TEXT PRIMARY KEY,
+    summary_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    time_span TEXT,
+    apps_json TEXT NOT NULL,
+    source_history_ids_json TEXT NOT NULL,
+    total_duration_ms INTEGER NOT NULL,
+    entry_count INTEGER NOT NULL,
+    summary TEXT,
+    blockers_json TEXT NOT NULL,
+    next_step TEXT,
+    keywords_json TEXT NOT NULL,
+    is_user_modified INTEGER NOT NULL DEFAULT 0,
+    user_modified_fields TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_clusters_date ON task_clusters(date);
+CREATE INDEX IF NOT EXISTS idx_task_clusters_summary ON task_clusters(summary_id);";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskCluster {
@@ -57,23 +56,11 @@ pub struct TaskClustersManager {
 }
 
 impl TaskClustersManager {
-    pub fn new(db_path: PathBuf) -> Result<Self> {
-        let manager = Self { db_path };
-        manager.init_database()?;
-        Ok(manager)
+    pub fn new(db_path: PathBuf) -> Self {
+        Self { db_path }
     }
 
-    fn init_database(&self) -> Result<()> {
-        let mut conn = Connection::open(&self.db_path)?;
-        let migrations = Migrations::new(MIGRATIONS.to_vec());
-        #[cfg(debug_assertions)]
-        migrations
-            .validate()
-            .expect("Invalid task_clusters migrations");
-        migrations.to_latest(&mut conn)?;
-        Ok(())
-    }
-
+    #[allow(dead_code)]
     fn get_connection(&self) -> Result<Connection> {
         let conn = Connection::open(&self.db_path)?;
         conn.busy_timeout(std::time::Duration::from_millis(5000))?;
@@ -90,16 +77,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_migrations_validate() {
-        let migrations = Migrations::new(MIGRATIONS.to_vec());
-        migrations.validate().expect("Migrations should validate");
-    }
-
-    #[test]
-    fn test_init_database_creates_table() {
+    fn test_migration_sql_creates_table_when_applied() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let manager = TaskClustersManager::new(tmp.path().to_path_buf()).unwrap();
-        let conn = manager.get_connection().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch(MIGRATION_SQL)
+            .expect("MIGRATION_SQL should apply cleanly");
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_clusters'",
@@ -108,6 +90,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_migration_sql_creates_indexes() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch(MIGRATION_SQL)
+            .expect("MIGRATION_SQL should apply cleanly");
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_task_clusters_date','idx_task_clusters_summary')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[test]

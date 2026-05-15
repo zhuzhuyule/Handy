@@ -445,6 +445,8 @@ static MIGRATIONS: &[M] = &[
              originals = '[]'
          WHERE entry_type = 'force_replace' OR force_replace = 1;"
     ),
+    // Migration 45: Add task_clusters table for daily AI-generated task summaries (v2)
+    M::up(crate::managers::task_clusters::MIGRATION_SQL),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

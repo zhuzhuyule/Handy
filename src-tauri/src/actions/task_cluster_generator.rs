@@ -1,10 +1,16 @@
-// Helpers consumed by T7's `generate_task_clusters` orchestrator; allow until that lands.
+// Helpers and orchestrator consumed by T8 command layer; allow until callers land.
 #![allow(dead_code)]
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::managers::task_clusters::TaskCluster;
+use crate::actions::post_process::execute_llm_request_with_retry;
+use crate::managers::cluster_feedback::ClusterFeedbackManager;
+use crate::managers::prompt::{substitute_variables, PromptManager};
+use crate::managers::task_clusters::{TaskCluster, TaskClustersManager};
+use tauri::AppHandle;
 
 /// Subset of fields the LLM returns; ids are filled, server-side fields (id, summary_id, etc.) added later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +189,311 @@ pub fn sanitize_outputs(
         .collect()
 }
 
+// =============================================================================
+// Orchestrator
+// =============================================================================
+
+/// Input to `generate_task_clusters`. Caller (T8 command layer) resolves
+/// `summary_id` and `entries` from history/summary managers.
+pub struct GenerateClustersInput {
+    pub date: String,
+    pub summary_id: i64,
+    pub entries: Vec<ClusterableEntry>,
+    pub force: bool,
+}
+
+/// Result of `generate_task_clusters`.
+pub struct GenerateClustersResult {
+    pub clusters: Vec<TaskCluster>,
+    pub skipped_reason: Option<String>,
+    pub llm_called: bool,
+}
+
+const CACHE_TTL_MS: i64 = 60 * 60 * 1000; // 1h
+const FEEDBACK_WINDOW_DAYS: i64 = 30;
+const FEEDBACK_LIMIT: i64 = 5;
+const CLUSTER_PROMPT_ID: &str = "system_task_clustering";
+
+/// Orchestrate AI clustering for a date:
+///   1. Cache freshness check (skip if all clusters <1h old, unless force)
+///   2. Protected clusters are preserved verbatim
+///   3. Candidate entries (non-protected) are sent to LLM
+///   4. JSON parse with one strict-mode retry on failure
+///   5. Sanitize against valid entry ids
+///   6. Delete unmodified clusters for date, upsert new ones
+///   7. Return combined (protected + new), ordered by duration desc
+pub async fn generate_task_clusters(
+    app_handle: &AppHandle,
+    task_clusters_manager: Arc<TaskClustersManager>,
+    cluster_feedback_manager: Arc<ClusterFeedbackManager>,
+    prompt_manager: Arc<PromptManager>,
+    input: GenerateClustersInput,
+) -> Result<GenerateClustersResult> {
+    let GenerateClustersInput {
+        date,
+        summary_id,
+        entries,
+        force,
+    } = input;
+
+    // --- Step 1: Cache freshness check --------------------------------------
+    if !force {
+        let existing = task_clusters_manager.get_by_date(&date)?;
+        if !existing.is_empty() {
+            let now = chrono::Utc::now().timestamp_millis();
+            let all_fresh = existing.iter().all(|c| now - c.created_at < CACHE_TTL_MS);
+            if all_fresh {
+                log::debug!(
+                    "task_cluster: cache hit for date={} ({} clusters)",
+                    date,
+                    existing.len()
+                );
+                return Ok(GenerateClustersResult {
+                    clusters: existing,
+                    skipped_reason: Some("cache_hit".into()),
+                    llm_called: false,
+                });
+            }
+        }
+    }
+
+    // --- Step 2: Empty-day short-circuit ------------------------------------
+    if entries.is_empty() {
+        log::debug!("task_cluster: no entries for date={}, skipping", date);
+        return Ok(GenerateClustersResult {
+            clusters: vec![],
+            skipped_reason: Some("no_entries".into()),
+            llm_called: false,
+        });
+    }
+
+    // --- Step 3: Protected clusters + candidate filtering -------------------
+    let protected = task_clusters_manager.get_protected_clusters_for_date(&date)?;
+    let protected_ids: std::collections::HashSet<i64> = protected
+        .iter()
+        .flat_map(|c| c.source_history_ids.iter().copied())
+        .collect();
+
+    let candidate_entries: Vec<ClusterableEntry> = entries
+        .iter()
+        .filter(|e| !protected_ids.contains(&e.id))
+        .cloned()
+        .collect();
+
+    if candidate_entries.is_empty() {
+        log::debug!(
+            "task_cluster: all {} entries are protected for date={}",
+            entries.len(),
+            date
+        );
+        return Ok(GenerateClustersResult {
+            clusters: protected,
+            skipped_reason: Some("all_protected".into()),
+            llm_called: false,
+        });
+    }
+
+    // --- Step 4: Render prompt ----------------------------------------------
+    let template = prompt_manager
+        .get_prompt(app_handle, CLUSTER_PROMPT_ID)
+        .map_err(|e| anyhow::anyhow!("failed to load clustering prompt: {}", e))?;
+
+    let feedback_entries = cluster_feedback_manager
+        .list_recent_negative_with_notes(FEEDBACK_WINDOW_DAYS, FEEDBACK_LIMIT)?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let feedback_lines: Vec<(i64, String)> = feedback_entries
+        .iter()
+        .filter_map(|f| f.note.as_ref().map(|n| (f.created_at, n.clone())))
+        .collect();
+
+    let entries_block = render_entries_block(&candidate_entries);
+    let protected_block = render_protected_block(&protected);
+    let feedback_block = render_feedback_block(&feedback_lines, now_ms);
+
+    let mut vars: HashMap<&str, String> = HashMap::new();
+    vars.insert("date", date.clone());
+    vars.insert("entry_count", candidate_entries.len().to_string());
+    vars.insert("entries", entries_block);
+    vars.insert("protected_clusters", protected_block.clone());
+    vars.insert("user_feedback", feedback_block.clone());
+
+    let rendered = substitute_variables(&template, &vars);
+    let rendered = strip_conditional_block(
+        &rendered,
+        "protected_clusters_block",
+        protected_block.is_empty(),
+    );
+    let rendered =
+        strip_conditional_block(&rendered, "user_feedback_block", feedback_block.is_empty());
+
+    // --- Step 5: Resolve settings, provider, model --------------------------
+    let settings = crate::settings::get_settings(app_handle);
+    let (provider, model, cached_model_id) = resolve_clustering_target(&settings)?;
+
+    // --- Step 6: Call LLM with retry ----------------------------------------
+    let system_prompts = vec![rendered];
+    let llm_result = execute_llm_request_with_retry(
+        app_handle,
+        &settings,
+        &provider,
+        &model,
+        cached_model_id.as_deref(),
+        &system_prompts,
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let raw_text = match llm_result {
+        Ok(resp) => resp.text,
+        Err(e) => anyhow::bail!("LLM clustering call failed: {}", e),
+    };
+
+    // --- Step 7: Parse with strict-mode retry on failure --------------------
+    let parsed = match parse_llm_output(&raw_text) {
+        Ok(p) => p,
+        Err(first_err) => {
+            log::warn!(
+                "task_cluster: initial JSON parse failed ({}), retrying with strict instruction",
+                first_err
+            );
+            let mut strict_system = system_prompts.clone();
+            strict_system
+                .push("Return ONLY a valid JSON array. No prose, no markdown fences.".into());
+            let retry_resp = execute_llm_request_with_retry(
+                app_handle,
+                &settings,
+                &provider,
+                &model,
+                cached_model_id.as_deref(),
+                &strict_system,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("LLM strict-retry call failed: {}", e))?;
+            parse_llm_output(&retry_resp.text)?
+        }
+    };
+
+    // --- Step 8: Sanitize against valid candidate ids -----------------------
+    let valid_ids: std::collections::HashSet<i64> =
+        candidate_entries.iter().map(|e| e.id).collect();
+    let sanitized = sanitize_outputs(parsed, &valid_ids);
+
+    // --- Step 9: Replace AI-generated clusters for the date -----------------
+    task_clusters_manager.delete_unmodified_for_date(&date)?;
+
+    let upsert_ts = chrono::Utc::now().timestamp_millis();
+    let mut inserted: Vec<TaskCluster> = Vec::with_capacity(sanitized.len());
+    for o in sanitized {
+        let total_duration_ms =
+            compute_total_duration_ms(&o.source_history_ids, &candidate_entries);
+        let cluster = TaskCluster {
+            id: TaskClustersManager::new_cluster_id(),
+            summary_id,
+            date: date.clone(),
+            title: o.title,
+            status: o.status,
+            time_span: o.time_span,
+            apps: o.apps,
+            source_history_ids: o.source_history_ids.clone(),
+            total_duration_ms,
+            entry_count: o.source_history_ids.len() as i64,
+            summary: o.summary,
+            blockers: o.blockers,
+            next_step: o.next_step,
+            keywords: o.keywords,
+            is_user_modified: false,
+            user_modified_fields: vec![],
+            created_at: upsert_ts,
+            updated_at: upsert_ts,
+        };
+        task_clusters_manager.upsert(&cluster)?;
+        inserted.push(cluster);
+    }
+
+    // --- Step 10: Combine protected + new, sort by duration desc ------------
+    let mut combined = protected;
+    combined.extend(inserted);
+    combined.sort_by(|a, b| b.total_duration_ms.cmp(&a.total_duration_ms));
+
+    log::info!(
+        "task_cluster: generated {} clusters for date={} ({} protected, {} new)",
+        combined.len(),
+        date,
+        combined.iter().filter(|c| c.is_user_modified).count(),
+        combined.iter().filter(|c| !c.is_user_modified).count(),
+    );
+
+    Ok(GenerateClustersResult {
+        clusters: combined,
+        skipped_reason: None,
+        llm_called: true,
+    })
+}
+
+/// Resolve provider + model + optional cached_model_id for the clustering call.
+/// Reuses the same selection logic as the rest of the post-process pipeline:
+///   1. Active post-process provider (from settings.post_process_provider_id, etc.)
+///   2. Model: selected_prompt_model → cached_models lookup → post_process_models[provider.id]
+fn resolve_clustering_target(
+    settings: &crate::settings::AppSettings,
+) -> Result<(crate::settings::PostProcessProvider, String, Option<String>)> {
+    let provider = settings
+        .active_post_process_provider()
+        .ok_or_else(|| anyhow::anyhow!("no active post-process provider configured"))?
+        .clone();
+
+    let selected_cached = settings
+        .selected_prompt_model
+        .as_ref()
+        .map(|c| &c.primary_id)
+        .and_then(|id| {
+            settings
+                .cached_models
+                .iter()
+                .find(|m| m.id == *id && m.provider_id == provider.id)
+        });
+
+    let model = selected_cached
+        .map(|m| m.model_id.clone())
+        .or_else(|| settings.post_process_models.get(&provider.id).cloned())
+        .ok_or_else(|| anyhow::anyhow!("no model configured for provider '{}'", provider.id))?;
+
+    let cached_model_id = selected_cached.map(|m| m.id.clone());
+    Ok((provider, model, cached_model_id))
+}
+
+/// Remove (or keep, stripping markers only) a `{{#name}}...{{/name}}` block in the template.
+/// If `is_empty` is true, removes the whole block. Otherwise just strips the open/close markers.
+fn strip_conditional_block(rendered: &str, block_name: &str, is_empty: bool) -> String {
+    let open = format!("{{{{#{}}}}}", block_name);
+    let close = format!("{{{{/{}}}}}", block_name);
+    if !is_empty {
+        rendered.replace(&open, "").replace(&close, "")
+    } else if let (Some(s), Some(e)) = (rendered.find(&open), rendered.find(&close)) {
+        let mut out = String::with_capacity(rendered.len());
+        out.push_str(&rendered[..s]);
+        out.push_str(&rendered[e + close.len()..]);
+        out
+    } else {
+        rendered.to_string()
+    }
+}
+
+/// Sum duration_ms for entries whose ids appear in `ids`.
+fn compute_total_duration_ms(ids: &[i64], entries: &[ClusterableEntry]) -> i64 {
+    let id_set: std::collections::HashSet<i64> = ids.iter().copied().collect();
+    entries
+        .iter()
+        .filter(|e| id_set.contains(&e.id))
+        .map(|e| e.duration_ms)
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +615,54 @@ mod tests {
             .unwrap()
             .timestamp_millis();
         assert_eq!(format_hhmm(target_ms), "01:05");
+    }
+
+    #[test]
+    fn test_strip_conditional_block_keeps_when_not_empty() {
+        let t = "before {{#x_block}}content{{/x_block}} after";
+        let out = strip_conditional_block(t, "x_block", false);
+        assert_eq!(out, "before content after");
+    }
+
+    #[test]
+    fn test_strip_conditional_block_removes_when_empty() {
+        let t = "before {{#x_block}}content{{/x_block}} after";
+        let out = strip_conditional_block(t, "x_block", true);
+        assert_eq!(out, "before  after");
+    }
+
+    #[test]
+    fn test_compute_total_duration_ms_sums_matching_ids() {
+        let entries = vec![
+            ClusterableEntry {
+                id: 1,
+                timestamp_ms: 0,
+                app_name: None,
+                window_title: None,
+                text: "".into(),
+                duration_ms: 100,
+            },
+            ClusterableEntry {
+                id: 2,
+                timestamp_ms: 0,
+                app_name: None,
+                window_title: None,
+                text: "".into(),
+                duration_ms: 200,
+            },
+            ClusterableEntry {
+                id: 3,
+                timestamp_ms: 0,
+                app_name: None,
+                window_title: None,
+                text: "".into(),
+                duration_ms: 300,
+            },
+        ];
+        assert_eq!(compute_total_duration_ms(&[1, 3], &entries), 400);
+        assert_eq!(compute_total_duration_ms(&[], &entries), 0);
+        // duplicate ids should not double-count
+        assert_eq!(compute_total_duration_ms(&[1, 1], &entries), 100);
     }
 
     #[test]

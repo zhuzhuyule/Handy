@@ -11,6 +11,8 @@ pub mod post_processing;
 pub mod prompt;
 pub mod skill;
 pub mod summary;
+#[allow(dead_code)]
+pub mod task_clusters;
 pub mod transcription;
 pub mod unsupported_params;
 pub mod vocabulary;

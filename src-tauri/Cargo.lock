@@ -7963,6 +7963,7 @@ dependencies = [
  "tiktoken-rs",
  "tokio",
  "transcribe-rs",
+ "uuid",
  "vad-rs",
  "windows 0.61.3",
  "x11rb",

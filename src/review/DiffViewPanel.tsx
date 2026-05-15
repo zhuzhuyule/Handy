@@ -1,5 +1,6 @@
 // Single model diff view with source + output panels
 
+import { ScrollArea } from "@radix-ui/themes";
 import { Editor, EditorContent } from "@tiptap/react";
 import { IconTextPlus } from "@tabler/icons-react";
 import React, { useState } from "react";
@@ -97,30 +98,36 @@ export const DiffViewPanel: React.FC<DiffViewPanelProps> = ({
             durationSec={3.2}
           />
         )}
-        <div
-          className="review-panel-body review-output-content"
-          onMouseDown={(event) => {
-            if (!(event.target instanceof HTMLElement)) {
-              return;
-            }
-
-            if (event.target.closest("button")) {
-              return;
-            }
-
-            if (event.target.closest(".ProseMirror")) {
-              return;
-            }
-            event.preventDefault();
-            focusEditor();
-          }}
+        <ScrollArea
+          type="hover"
+          scrollbars="vertical"
+          className="review-output-scroll"
         >
-          {isRerunning ? (
-            <div className="candidate-loading-shimmer" />
-          ) : (
-            <EditorContent editor={editor} />
-          )}
-        </div>
+          <div
+            className="review-panel-body review-output-content"
+            onMouseDown={(event) => {
+              if (!(event.target instanceof HTMLElement)) {
+                return;
+              }
+
+              if (event.target.closest("button")) {
+                return;
+              }
+
+              if (event.target.closest(".ProseMirror")) {
+                return;
+              }
+              event.preventDefault();
+              focusEditor();
+            }}
+          >
+            {isRerunning ? (
+              <div className="candidate-loading-shimmer" />
+            ) : (
+              <EditorContent editor={editor} />
+            )}
+          </div>
+        </ScrollArea>
         {showActionRow && (
           <div className="review-inline-action-row">
             {changePercent !== 0 && (

@@ -1,7 +1,7 @@
 // ReviewWindow - Independent window for reviewing low-confidence transcriptions
 // This provides a floating window UI for editing and inserting transcribed text
 
-import { Button, Tooltip } from "@radix-ui/themes";
+import { Button, ScrollArea, Tooltip } from "@radix-ui/themes";
 import { IconCheck, IconClipboard, IconTextPlus } from "@tabler/icons-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -700,10 +700,17 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
       // Auto mode: window height == sum of rendered region heights.
       const headerH = regionHeight(".review-header");
       const footerH = regionHeight(".review-footer");
+      // Measure the wrapper that includes its own padding so the window
+      // height accounts for the content-area's 12px top/bottom padding +
+      // any margin between the chat card and the footer. For polish mode,
+      // .review-panels-layout IS the same element as .review-content-area
+      // (two classes on one div), so this is a no-op there. Falling back
+      // to the bare .review-section-no-title would undercount by ~24px and
+      // clip the footer.
       const contentH =
         regionHeight(".review-panels-layout") ||
         regionHeight(".review-multi-content") ||
-        regionHeight(".review-section-no-title");
+        regionHeight(".review-content-area");
       // Must match `.review-window-container { padding-bottom }`.
       const containerPadding = 16;
 
@@ -1854,6 +1861,7 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
       ".review-footer",
       ".review-panel-source",
       ".review-panel-output",
+      ".review-content-area",
       ".review-section-no-title",
       ".review-multi-content",
       ".review-preview-dock",
@@ -1907,6 +1915,18 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
   const isRealMultiModel =
     multiCandidates != null && multiCandidates.length > 1;
 
+  // Skill/chat outputs route Cmd+Enter through the polish-insert path (see
+  // handleInsertEnglish's skill fallback). The translation-enabled setting
+  // can still be true from the user's profile, but English preview / English
+  // insert aren't meaningful in this mode. Use this derived flag to drive
+  // rendering so the footer Insert (which Cmd+Enter actually triggers)
+  // styles as primary and no spurious "ENGLISH" preview appears.
+  const isSkillOutput =
+    initialData.output_mode === "chat" || !!initialData.skill_name;
+  const translationActive =
+    !isSkillOutput &&
+    (translationEnabled || translationStatus !== "idle" || !!translatedText);
+
   const getHeaderMode = (): "multi" | "polish" | "chat" => {
     // Only use "multi" header for actual multi-model results (2+ candidates)
     if (isRealMultiModel) return "multi";
@@ -1914,13 +1934,18 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
     return "polish";
   };
 
+  // Per-mode root class so CSS can target a single mode without relying on
+  // implicit markers like the presence of `.review-section-no-title`.
+  // Yields: `polish-window`, `chat-window`, or `multi-window`.
+  const modeClass = `${getHeaderMode()}-window`;
+
   return (
     <div
       className="w-screen h-screen flex flex-col items-stretch p-0 box-border overflow-hidden bg-transparent"
       ref={containerRef}
     >
       <div
-        className="review-window-container"
+        className={`review-window-container ${modeClass}`}
         data-review-manual={manualSize ? "true" : undefined}
       >
         <div
@@ -2030,13 +2055,7 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
             onInsert={handleDirectInsert}
             onInsertOriginal={handleInsertOriginal}
             pressedModifier={pressedModifier}
-            insertModifier={
-              translationEnabled ||
-              translationStatus !== "idle" ||
-              !!translatedText
-                ? "ctrl"
-                : "meta"
-            }
+            insertModifier={translationActive ? "ctrl" : "meta"}
           />
         ) : initialData.output_mode !== "chat" ? (
           <DiffViewPanel
@@ -2052,45 +2071,41 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
             // In that world ⌘⏎ is reserved for English, so polish uses
             // Ctrl+Enter; otherwise ⌘⏎ IS the polish insert.
             insertShortcut={
-              translationEnabled ||
-              translationStatus !== "idle" ||
-              !!translatedText
-                ? isMac
-                  ? "⌃⏎"
-                  : "Ctrl⏎"
-                : isMac
-                  ? "⌘⏎"
-                  : "⊞⏎"
+              translationActive ? (isMac ? "⌃⏎" : "Ctrl⏎") : isMac ? "⌘⏎" : "⊞⏎"
             }
             isSubmitting={isSubmitting}
-            translationIntended={
-              translationEnabled ||
-              translationStatus !== "idle" ||
-              !!translatedText
-            }
+            translationIntended={translationActive}
             pressedModifier={pressedModifier}
           />
         ) : (
           <div className="review-content-area">
-            <div
-              className="review-section review-section-final review-section-no-title"
-              onMouseDown={(event) => {
-                if (!(event.target instanceof HTMLElement)) {
-                  return;
-                }
+            <div className="review-section review-section-final review-section-no-title">
+              <ScrollArea
+                type="hover"
+                scrollbars="vertical"
+                className="review-section-scroll"
+              >
+                <div
+                  className="review-section-content"
+                  onMouseDown={(event) => {
+                    if (!(event.target instanceof HTMLElement)) {
+                      return;
+                    }
 
-                if (event.target.closest("button")) {
-                  return;
-                }
+                    if (event.target.closest("button")) {
+                      return;
+                    }
 
-                if (event.target.closest(".ProseMirror")) {
-                  return;
-                }
-                event.preventDefault();
-                editor?.commands.focus();
-              }}
-            >
-              <EditorContent editor={editor} className="flex-1 min-h-0" />
+                    if (event.target.closest(".ProseMirror")) {
+                      return;
+                    }
+                    event.preventDefault();
+                    editor?.commands.focus();
+                  }}
+                >
+                  <EditorContent editor={editor} className="flex-1 min-h-0" />
+                </div>
+              </ScrollArea>
             </div>
           </div>
         )}
@@ -2114,34 +2129,15 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
           // main insert), ⌃⏎ when English is in play (⌘⏎ reserved for the
           // English preview's Insert).
           insertShortcut={
-            translationEnabled ||
-            translationStatus !== "idle" ||
-            !!translatedText
-              ? isMac
-                ? "⌃⏎"
-                : "Ctrl⏎"
-              : isMac
-                ? "⌘⏎"
-                : "⊞⏎"
+            translationActive ? (isMac ? "⌃⏎" : "Ctrl⏎") : isMac ? "⌘⏎" : "⊞⏎"
           }
           // ⌃⏎ → secondary styling (no solid fill). ⌘⏎ (no-translation
           // case) keeps primary because it IS the main insert action.
-          insertVariant={
-            translationEnabled ||
-            translationStatus !== "idle" ||
-            !!translatedText
-              ? "secondary"
-              : "primary"
-          }
+          insertVariant={translationActive ? "secondary" : "primary"}
           // NeonBorder preview fires on the modifier actually bound to the
           // footer: ⌃ when translation is live, ⌘ otherwise.
           insertArmed={
-            pressedModifier ===
-            (translationEnabled ||
-            translationStatus !== "idle" ||
-            !!translatedText
-              ? "ctrl"
-              : "meta")
+            pressedModifier === (translationActive ? "ctrl" : "meta")
           }
           // Polish single-model view: Insert lives inside DiffViewPanel, so the
           // footer must not render a duplicate Insert button.
@@ -2153,9 +2149,7 @@ const ReviewWindow: React.FC<ReviewWindowProps> = ({
           onInsert={handleInsertPolished}
         />
 
-        {(translationEnabled ||
-          translationStatus !== "idle" ||
-          !!translatedText) && (
+        {translationActive && (
           <div className="review-preview-dock">
             <div
               className="review-translation-float"

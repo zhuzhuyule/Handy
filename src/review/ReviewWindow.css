@@ -171,11 +171,6 @@
 [data-theme="light"] .review-content-area > .review-section-no-title {
   background: #ffffff;
   border: 0;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 1),
-    inset 0 0 0 1px rgba(15, 23, 42, 0.06),
-    0 6px 18px rgba(15, 23, 42, 0.08),
-    0 2px 4px rgba(15, 23, 42, 0.04);
 }
 
 [data-theme="light"] .review-translation-float {
@@ -934,10 +929,14 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 12px;
+  padding: 8px 16px;
   gap: 8px;
   background: transparent;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.chat-window .review-footer {
+  padding: 0 16px;
 }
 
 .review-footer-left {
@@ -1154,6 +1153,7 @@
   min-height: 0;
   gap: 7px;
   overflow-y: auto;
+  overflow-x: hidden;
   max-height: var(--review-content-max, none);
   background: transparent; /* Let container background show through */
 }
@@ -1505,17 +1505,48 @@
   max-height: var(--review-content-max, none);
 }
 
-/* Chat / AI Q&A mode — the content area wraps a single editor with no
-   source or translation siblings. Give it the same translucent glass
-   card look as the polish/source/preview frames so it doesn't read as
-   an untreated raw page. */
+/* Chat / AI Q&A mode — the content area wraps a single editor inside a
+   Radix ScrollArea (`.review-section-scroll`). The card itself only owns
+   the visual chrome (border / radius / background) and the `max-height`
+   cap; scrolling and the (styled, overlaid) scrollbar live inside the
+   ScrollArea. `overflow: hidden` clips ScrollArea to the rounded corners
+   and `display: flex` lets the inner ScrollArea fill the card. Padding
+   is moved into `.review-section-content` (inside the viewport) so the
+   overlay scrollbar can sit flush against the card's right border while
+   text keeps a visual gutter. */
 .review-content-area > .review-section-no-title {
-  margin: 0 4px;
-  padding: 10px 14px;
   border-radius: 10px;
   background: color-mix(in srgb, var(--gray-3) 55%, transparent);
   border: 1px solid color-mix(in srgb, var(--gray-a5) 60%, transparent);
   max-height: var(--review-output-max, 60vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ScrollArea root inside the chat card — fills the remaining vertical
+   space so its viewport (and the overlay scrollbar) span the card
+   edge-to-edge. */
+.review-section-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+/* Inner content wrapper — sits inside the ScrollArea viewport. Owns the
+   text padding so the scrollbar can flush against the card edge. */
+.review-section-content {
+  padding: 10px 14px;
+}
+
+.review-content-area > .review-section-no-title .ProseMirror {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chat-window .review-content-area {
+  flex: 1;
+  padding: 0 16px 12px;
 }
 
 .review-change-tip {
@@ -1733,17 +1764,30 @@
   border-bottom: 1px solid var(--gray-4);
 }
 
-/* Output body fills panel */
+/* Output body fills panel — scrolling is handled by the wrapping Radix
+   ScrollArea (`.review-output-scroll`) so we only keep layout properties
+   here, no overflow/native-scrollbar rules. */
 .review-output-content {
   position: relative;
   display: flex;
-  flex: 1;
+  flex-direction: column;
   width: 100%;
   min-width: 0;
+}
+
+/* Radix ScrollArea root in the polish output card.
+   - Fills the remaining vertical space inside the flex-column card so
+     content (long polished text) scrolls instead of stretching the card.
+   - `min-height: 0` lets it shrink below content height inside the flex
+     parent — without it the viewport never bounds and scrolling never
+     triggers.
+   - The viewport spans edge-to-edge inside the card so the overlay
+     scrollbar sits flush against the card's right border; the visual
+     gutter comes from `.review-panel-body` padding *inside* the viewport. */
+.review-output-scroll {
+  flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: auto;
+  width: 100%;
 }
 
 .review-output-content > div {
@@ -2388,9 +2432,11 @@ span[data-diff-level="major"] {
 }
 
 .review-panel-output-compact .review-panel-body {
-  flex: 1 1 auto;
+  /* The Radix ScrollArea (`.review-output-scroll`) wraps this body and owns
+     scrolling now, so we drop `overflow-y: auto` / `flex: 1 1 auto` here.
+     Keep padding inside the body so the scrollbar can sit flush at the
+     card edge while text retains a visual gutter. */
   min-height: 0;
-  overflow-y: auto;
 }
 
 /* Persistent bottom action row — no top border, paper-on-paper reading */
@@ -2433,7 +2479,10 @@ span[data-diff-level="major"] {
   line-height: 1;
 }
 
-/* Polished-card Insert — solid white pill, shadow-only edge. */
+/* Polished-card Insert — secondary default: solid white pill, shadow-only edge.
+   When the polish Insert IS the action bound to ⌘⏎ (no translation in play),
+   it carries the .review-btn-primary class and flips to the sky-blue variant
+   below so the primary action is visually clear. */
 .review-inline-insert-btn {
   background: #ffffff !important;
   border: 0 !important;
@@ -2452,6 +2501,23 @@ span[data-diff-level="major"] {
     inset 0 1px 0 rgba(255, 255, 255, 1),
     inset 0 0 0 1px rgba(15, 23, 42, 0.12),
     0 2px 4px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* Primary variant — matches the translation Insert pill so whichever Insert
+   is bound to ⌘⏎ reads as the highlighted action. */
+.review-inline-insert-btn.review-btn-primary {
+  background: #0284c7 !important;
+  color: #fff !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.08),
+    0 1px 2px rgba(15, 23, 42, 0.15) !important;
+}
+
+.review-inline-insert-btn.review-btn-primary:hover:not(:disabled),
+.review-inline-insert-btn.review-btn-primary:focus:not(:disabled) {
+  background: #0369a1 !important;
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.18) !important;
 }
 
 .review-inline-insert-btn::after {

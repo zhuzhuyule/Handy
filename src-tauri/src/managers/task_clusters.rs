@@ -84,14 +84,38 @@ impl TaskClustersManager {
             title: row.get("title")?,
             status: row.get("status")?,
             time_span: row.get("time_span")?,
-            apps: serde_json::from_str(&apps_json).unwrap_or_default(),
-            source_history_ids: serde_json::from_str(&source_ids_json).unwrap_or_default(),
+            apps: serde_json::from_str(&apps_json).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
+            source_history_ids: serde_json::from_str(&source_ids_json).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
             total_duration_ms: row.get("total_duration_ms")?,
             entry_count: row.get("entry_count")?,
             summary: row.get("summary")?,
-            blockers: serde_json::from_str(&blockers_json).unwrap_or_default(),
+            blockers: serde_json::from_str(&blockers_json).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
             next_step: row.get("next_step")?,
-            keywords: serde_json::from_str(&keywords_json).unwrap_or_default(),
+            keywords: serde_json::from_str(&keywords_json).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
             is_user_modified: is_user_modified_int != 0,
             user_modified_fields: user_modified_fields_json
                 .as_deref()
@@ -182,13 +206,15 @@ impl TaskClustersManager {
         }
         let now = chrono::Utc::now().timestamp_millis();
         let conn = self.get_connection()?;
-        let current_fields: Option<String> = conn
-            .query_row(
-                "SELECT user_modified_fields FROM task_clusters WHERE id=?",
-                [cluster_id],
-                |row| row.get(0),
-            )
-            .ok();
+        let current_fields: Option<String> = match conn.query_row(
+            "SELECT user_modified_fields FROM task_clusters WHERE id=?",
+            [cluster_id],
+            |row| row.get(0),
+        ) {
+            Ok(v) => Some(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
         let mut fields: Vec<String> = current_fields
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -340,5 +366,53 @@ mod tests {
         let loaded = m.get_by_date("2026-05-15").unwrap();
         assert_eq!(loaded[0].title, "Long");
         assert_eq!(loaded[1].title, "Short");
+    }
+
+    #[test]
+    fn test_upsert_twice_preserves_created_at_and_no_duplicate() {
+        let (_tmp, m) = setup_db();
+        let mut c = make_cluster("2026-05-15", 1);
+        let original_created_at = c.created_at;
+        m.upsert(&c).unwrap();
+
+        // Second upsert with same id but different content + later updated_at
+        c.title = "Updated title".into();
+        c.updated_at = c.created_at + 1000;
+        // Caller is responsible for created_at — but the SQL must not overwrite it on conflict.
+        // Simulate a caller that accidentally sends a different created_at: still must not overwrite.
+        c.created_at = c.created_at + 999_999;
+        m.upsert(&c).unwrap();
+
+        let loaded = m.get_by_id(&c.id).unwrap().unwrap();
+        assert_eq!(loaded.title, "Updated title");
+        assert_eq!(
+            loaded.created_at, original_created_at,
+            "created_at must not be overwritten on conflict"
+        );
+        assert_eq!(loaded.updated_at, original_created_at + 1000);
+
+        // No duplicate rows for the same id
+        let all = m.get_by_date("2026-05-15").unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn test_update_field_dedups_user_modified_fields() {
+        let (_tmp, m) = setup_db();
+        let c = make_cluster("2026-05-15", 1);
+        m.upsert(&c).unwrap();
+
+        m.update_field(&c.id, "title", "First update").unwrap();
+        m.update_field(&c.id, "title", "Second update").unwrap();
+        m.update_field(&c.id, "status", "完成").unwrap();
+        m.update_field(&c.id, "title", "Third update").unwrap();
+
+        let loaded = m.get_by_id(&c.id).unwrap().unwrap();
+        assert_eq!(loaded.title, "Third update");
+        assert_eq!(loaded.status, "完成");
+        // Both fields should appear once each, no duplicates
+        let mut sorted = loaded.user_modified_fields.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec!["status".to_string(), "title".to_string()]);
     }
 }

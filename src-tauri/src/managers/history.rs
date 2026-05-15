@@ -447,6 +447,8 @@ static MIGRATIONS: &[M] = &[
     ),
     // Migration 45: Add task_clusters table for daily AI-generated task summaries (v2)
     M::up(crate::managers::task_clusters::MIGRATION_SQL),
+    // Migration 46: cluster_feedback table
+    M::up(crate::managers::cluster_feedback::MIGRATION_SQL),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

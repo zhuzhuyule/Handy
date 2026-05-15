@@ -1,4 +1,7 @@
 pub mod audio;
+// TODO: remove #[allow(dead_code)] after T9 wires up commands
+#[allow(dead_code)]
+pub mod cluster_feedback;
 #[allow(dead_code)]
 pub mod daily_vocabulary;
 pub mod history;

@@ -87,7 +87,9 @@ export function buildProviderTabsLayout(
   if (initialVisible.length === 0) {
     return {
       visible: [selectedOption],
-      overflow: initialOverflow.filter((option) => option.value !== selectedValue),
+      overflow: initialOverflow.filter(
+        (option) => option.value !== selectedValue,
+      ),
     };
   }
 

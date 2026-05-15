@@ -13,6 +13,7 @@
 ### Task 1: Add `freeModelProvider` to ProviderTemplate
 
 **Files:**
+
 - Modify: `src/components/settings/post-processing/providerTemplates.ts`
 
 - [ ] **Step 1: Add field to type and templates**
@@ -35,11 +36,13 @@ export type ProviderTemplate = {
 In the `PROVIDER_TEMPLATES` array:
 
 For the `gitee` entry (id: `"gitee"`), add:
+
 ```typescript
 freeModelProvider: "gitee",
 ```
 
 For the `xingchen` entry (id: `"xingchen"`), add:
+
 ```typescript
 freeModelProvider: "xunfei",
 ```
@@ -61,6 +64,7 @@ git commit -m "Add freeModelProvider field to ProviderTemplate"
 ### Task 2: Refactor AddModelDialog to use template metadata
 
 **Files:**
+
 - Modify: `src/components/settings/post-processing/dialogs/AddModelDialog.tsx`
 
 - [ ] **Step 1: Replace hardcoded mapping with template lookup**
@@ -108,13 +112,13 @@ In the `useEffect` that loads free models (the one triggered by `[open, provider
 ```typescript
 const workerProvider =
   PROVIDER_TO_WORKER[providerState.selectedProviderId] ?? null;
-invoke<FreeModel[]>("get_free_models", { provider: workerProvider })
+invoke<FreeModel[]>("get_free_models", { provider: workerProvider });
 ```
 
 with:
 
 ```typescript
-invoke<FreeModel[]>("get_free_models", { provider: freeModelProviderKey })
+invoke<FreeModel[]>("get_free_models", { provider: freeModelProviderKey });
 ```
 
 - [ ] **Step 5: Default source based on free model availability**
@@ -192,6 +196,7 @@ Expected: No errors.
 Run: `cd /Users/zac/code/github/asr/Handy && bun tauri dev`
 
 Test scenarios:
+
 1. Select gitee provider → open Add Model → both tabs visible, "内置免费模型" default, cards show "Gitee AI" label
 2. Select xingchen provider → open Add Model → both tabs visible, cards show "讯飞星辰" label
 3. Select openai provider → open Add Model → no tab switcher, only API model list shown

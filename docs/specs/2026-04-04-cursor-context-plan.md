@@ -13,6 +13,7 @@
 ### Task 1: CursorContext struct and boundary truncation helpers
 
 **Files:**
+
 - Modify: `src-tauri/src/clipboard.rs`
 
 - [ ] **Step 1: Write the CursorContext struct and truncation helper tests**
@@ -198,6 +199,7 @@ git commit -m "Add CursorContext struct and boundary truncation helpers"
 ### Task 2: macOS Accessibility API cursor context retrieval
 
 **Files:**
+
 - Modify: `src-tauri/src/clipboard.rs`
 
 - [ ] **Step 1: Implement get_cursor_context_via_accessibility for macOS**
@@ -401,11 +403,13 @@ git commit -m "Add macOS Accessibility API cursor context retrieval"
 ### Task 3: Capture cursor context at transcription time
 
 **Files:**
+
 - Modify: `src-tauri/src/actions/transcribe.rs`
 
 - [ ] **Step 1: Add cursor context capture after selected_text**
 
 In `transcribe.rs`, find the line (approximately line 443):
+
 ```rust
 let selected_text = crate::clipboard::get_selected_text(&ah).ok();
 ```
@@ -424,6 +428,7 @@ let cursor_context = if selected_text.is_some() {
 - [ ] **Step 2: Pass cursor_context into unified_post_process**
 
 Find the call to `unified_post_process` (approximately line 1744). The current call ends with:
+
 ```rust
                                     selected_text.clone(),
                                     review_document_text.clone(),
@@ -431,6 +436,7 @@ Find the call to `unified_post_process` (approximately line 1744). The current c
 ```
 
 Change to:
+
 ```rust
                                     selected_text.clone(),
                                     review_document_text.clone(),
@@ -455,16 +461,19 @@ git commit -m "WIP: Capture cursor context at transcription time"
 ### Task 4: Thread cursor_context through pipeline.rs
 
 **Files:**
+
 - Modify: `src-tauri/src/actions/post_process/pipeline.rs`
 
 - [ ] **Step 1: Add cursor_context parameter to unified_post_process**
 
 In `pipeline.rs`, update the `unified_post_process` function signature. After the existing parameter:
+
 ```rust
     review_document_text: Option<String>,
 ```
 
 Add:
+
 ```rust
     cursor_context: Option<crate::clipboard::CursorContext>,
 ```
@@ -472,6 +481,7 @@ Add:
 - [ ] **Step 2: Pass cursor_context to PromptBuilder in the LitePolish path**
 
 In the LitePolish section (around line 347), find:
+
 ```rust
         let built = super::prompt_builder::PromptBuilder::new(&lite_prompt, transcription)
             .app_name(app_name.as_deref())
@@ -486,6 +496,7 @@ In the LitePolish section (around line 347), find:
 ```
 
 Change to:
+
 ```rust
         let built = super::prompt_builder::PromptBuilder::new(&lite_prompt, transcription)
             .app_name(app_name.as_deref())
@@ -503,6 +514,7 @@ Change to:
 - [ ] **Step 3: Pass cursor_context to PromptBuilder in the FullPolish path (maybe_post_process_transcription)**
 
 In the `maybe_post_process_transcription` function, find the PromptBuilder construction (around line 2042):
+
 ```rust
         let mut builder = super::prompt_builder::PromptBuilder::new(&prompt, transcription_content)
             .streaming_transcription(streaming_transcription)
@@ -513,11 +525,13 @@ In the `maybe_post_process_transcription` function, find the PromptBuilder const
 This function doesn't currently receive `cursor_context`. Add it as a parameter:
 
 After `review_document_text: Option<String>,` in the `maybe_post_process_transcription` signature (line 1083), add:
+
 ```rust
     cursor_context: Option<crate::clipboard::CursorContext>,
 ```
 
 Then add `.cursor_context(cursor_context.as_ref())` to the builder chain (around line 2042):
+
 ```rust
         let mut builder = super::prompt_builder::PromptBuilder::new(&prompt, transcription_content)
             .streaming_transcription(streaming_transcription)
@@ -570,6 +584,7 @@ git commit -m "WIP: Thread cursor_context through pipeline"
 ### Task 5: Add cursor_context to PromptBuilder
 
 **Files:**
+
 - Modify: `src-tauri/src/actions/post_process/prompt_builder.rs`
 
 - [ ] **Step 1: Write tests for cursor context rendering**
@@ -691,11 +706,13 @@ Add to the `PromptBuilder` struct (after `selected_text`):
 ```
 
 Initialize in `new()`:
+
 ```rust
             cursor_context: None,
 ```
 
 Add the builder method (after `selected_text` method):
+
 ```rust
     pub fn cursor_context(mut self, ctx: Option<&'a crate::clipboard::CursorContext>) -> Self {
         self.cursor_context = ctx.filter(|c| !c.before.is_empty() || !c.after.is_empty());
@@ -748,6 +765,7 @@ Add the rendering in the sections assembly (after `selected_text` rendering, aro
 ```
 
 Also add `CursorContext` to the explicit placeholder replacement block (around line 601):
+
 ```rust
                 FieldTag::CursorContext => self
                     .cursor_context
@@ -778,6 +796,7 @@ In `build_input_protocol_note`, add after the `asr-corrections` rule (around lin
 - [ ] **Step 8: Add [cursor-context] to sanitize_history_entry filter**
 
 In `sanitize_history_entry` (around line 228), add a filter line:
+
 ```rust
                 && !trimmed.starts_with("[cursor-context]")
 ```
@@ -799,6 +818,7 @@ git commit -m "Add cursor context support to PromptBuilder with field tag and re
 ### Task 6: Full compilation and integration verification
 
 **Files:**
+
 - All previously modified files
 
 - [ ] **Step 1: Verify full project compilation**
@@ -809,6 +829,7 @@ Expected: clean compilation with no errors. If there are unused import warnings 
 - [ ] **Step 2: Fix any compilation issues**
 
 If there are errors, fix them. Common issues:
+
 - Missing `use` for `CursorContext` in pipeline.rs — add `use crate::clipboard::CursorContext;` if needed
 - Parameter ordering mismatches — ensure `cursor_context` is passed in the right position in all call sites
 
@@ -834,6 +855,7 @@ git commit -m "Fix compilation and resolve warnings for cursor context integrati
 ### Task 7: Pipeline decision logging
 
 **Files:**
+
 - Modify: `src-tauri/src/actions/post_process/pipeline.rs`
 
 - [ ] **Step 1: Add has_cursor_context to pipeline decision record**
@@ -851,6 +873,7 @@ Find where `decision` is initialized in `unified_post_process` (around line 53):
 ```
 
 After this initialization, add:
+
 ```rust
     decision.has_cursor_context = cursor_context.is_some();
 ```
@@ -862,6 +885,7 @@ Check if `PipelineDecisionRecord` has a generic metadata/extras field or needs a
 Run: `grep -n "struct PipelineDecisionRecord" src-tauri/src/managers/pipeline_log.rs`
 
 If the struct doesn't have a `has_cursor_context` field, add one:
+
 ```rust
     pub has_cursor_context: bool,
 ```

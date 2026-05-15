@@ -10,6 +10,7 @@ estimate: "3h"
 "通过 macOS Accessibility API 获取光标所在位置的前后文本，作为弱参考上下文注入到后处理 prompt 中，帮助 LLM 消歧义和理解用户意图，从而提高 ASR 后处理的准确率。"
 
 当前问题：
+
 1. 后处理 pipeline 缺少用户正在编辑内容的上下文，LLM 只能看到当前这句语音转写的文本
 2. 相同的语音内容在不同编辑上下文中含义可能完全不同（如"他"指谁、"这个"指什么）
 3. 现有的 `session_context`（最近 5 条同 app 转写）是语音维度的上下文，缺少文档维度的上下文
@@ -123,8 +124,8 @@ estimate: "3h"
 
 > 功能完成后填写。记录实际实现与 spec 的差异。
 
-| 原计划 | 实际实现 | 原因 |
-| ------ | -------- | ---- |
-| 使用现有扩展字段记录 has_cursor_context | 新增 migration 41: ALTER TABLE pipeline_decisions ADD COLUMN has_cursor_context | PipelineDecisionRecord 无 extras 字段，需新增列 |
-| extensions.rs 如需透传 cursor_context | 未修改 extensions.rs，multi-model 路径无 cursor_context | extensions.rs 有独立 HTTP 实现，统一为后续工作（与 CLAUDE.md 一致） |
-| test_truncate_before_at_sentence_boundary 期望 "Second sentence. Third sentence here." | 实际断言 "Third sentence here." | 计划中的期望值计算有误，实际算法在 30% 搜索窗口找到 `.` 后跳过空格 |
+| 原计划                                                                                 | 实际实现                                                                        | 原因                                                                |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 使用现有扩展字段记录 has_cursor_context                                                | 新增 migration 41: ALTER TABLE pipeline_decisions ADD COLUMN has_cursor_context | PipelineDecisionRecord 无 extras 字段，需新增列                     |
+| extensions.rs 如需透传 cursor_context                                                  | 未修改 extensions.rs，multi-model 路径无 cursor_context                         | extensions.rs 有独立 HTTP 实现，统一为后续工作（与 CLAUDE.md 一致） |
+| test_truncate_before_at_sentence_boundary 期望 "Second sentence. Third sentence here." | 实际断言 "Third sentence here."                                                 | 计划中的期望值计算有误，实际算法在 30% 搜索窗口找到 `.` 后跳过空格  |

@@ -1,8 +1,5 @@
 import React from "react";
-import {
-  getAppIconUrl,
-  useInstalledApps,
-} from "../../hooks/useInstalledApps";
+import { getAppIconUrl, useInstalledApps } from "../../hooks/useInstalledApps";
 
 interface AppIconProps {
   appName: string | null | undefined;

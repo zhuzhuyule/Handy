@@ -251,13 +251,7 @@ function AppGrid({
   );
 }
 
-function AppCell({
-  app,
-  onClick,
-}: {
-  app: InstalledApp;
-  onClick: () => void;
-}) {
+function AppCell({ app, onClick }: { app: InstalledApp; onClick: () => void }) {
   const [hovered, setHovered] = useState(false);
   const iconUrl = useMemo(() => {
     if (!app.icon_path) return null;

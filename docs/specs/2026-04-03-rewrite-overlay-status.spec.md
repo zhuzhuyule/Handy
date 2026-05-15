@@ -10,6 +10,7 @@ estimate: "2h"
 "当用户在 review 窗口通过语音改写文档时，overlay 应展示改写次数徽标和动态状态文案，让用户清楚知道当前是第几次修改、系统正在做什么。"
 
 当前问题：
+
 1. rewrite 模式下 overlay 因 `main.tsx` payload 解析 bug 全程黑屏
 2. 即使修复 bug，现有文案仅显示"第 N 次修改"，缺少转录/处理阶段的动态状态反馈
 3. LLM 返回的 operation 类型（改写/扩充/润色等）未向用户展示

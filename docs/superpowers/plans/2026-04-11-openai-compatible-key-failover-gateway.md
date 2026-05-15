@@ -13,6 +13,7 @@
 ## Task 1: Upgrade `KeySelector` Into a Request-Aware KeyPool
 
 **Files:**
+
 - Modify: `src-tauri/src/key_selector.rs`
 - Test: `src-tauri/src/key_selector.rs`
 
@@ -156,6 +157,7 @@ git commit -m "Refine key selector into request-aware key pool"
 ## Task 2: Add a Unified Execution Gateway for Provider Calls
 
 **Files:**
+
 - Create: `src-tauri/src/provider_gateway.rs`
 - Modify: `src-tauri/src/lib.rs`
 - Test: `src-tauri/src/provider_gateway.rs`
@@ -183,6 +185,7 @@ mod tests {
 ```
 
 The tests should assert:
+
 - retryable errors consume another key attempt
 - fatal errors stop without trying another key
 - request exhaustion returns an explicit exhausted outcome instead of a generic string
@@ -276,6 +279,7 @@ git commit -m "Add unified provider execution gateway"
 ## Task 3: Migrate Core LLM Execution Paths to the Gateway
 
 **Files:**
+
 - Modify: `src-tauri/src/actions/post_process/core.rs`
 - Modify: `src-tauri/src/actions/post_process/extensions.rs`
 - Test: `src-tauri/src/actions/post_process/core.rs`
@@ -365,6 +369,7 @@ git commit -m "Route core LLM execution through provider gateway"
 ## Task 4: Remove Remaining `first_key()` Reads From Routing, ASR, and Hotword Paths
 
 **Files:**
+
 - Modify: `src-tauri/src/actions/post_process/routing.rs`
 - Modify: `src-tauri/src/actions/transcribe.rs`
 - Modify: `src-tauri/src/managers/hotword.rs`
@@ -450,6 +455,7 @@ git commit -m "Remove direct provider key reads from runtime paths"
 ## Task 5: Add Provider Exhaustion Reporting and OpenAI-Compatible Model Listing
 
 **Files:**
+
 - Create: `src-tauri/src/commands/openai_gateway.rs`
 - Modify: `src-tauri/src/commands/mod.rs`
 - Modify: `src-tauri/src/lib.rs`
@@ -562,6 +568,7 @@ git commit -m "Add OpenAI-compatible model listing and exhaustion reporting"
 ## Task 6: Verify End-to-End Behavior and Document Remaining Follow-Ups
 
 **Files:**
+
 - Modify: `docs/superpowers/specs/2026-04-11-openai-compatible-key-failover-gateway-design.md`
 - Modify: `docs/superpowers/plans/2026-04-11-openai-compatible-key-failover-gateway.md`
 

@@ -13,6 +13,7 @@
 ### Task 1: Fix main.tsx payload parsing bug
 
 **Files:**
+
 - Modify: `src/overlay/main.tsx:18-31`
 
 This is the root cause of the rewrite overlay black screen. The `show-overlay` listener casts the entire payload as `OverlayState`, but rewrite payloads are objects `{ state, rewrite_count }`.
@@ -60,6 +61,7 @@ screen). Now correctly extracts .state from object payloads."
 ### Task 2: Add i18n translations for rewrite overlay states
 
 **Files:**
+
 - Modify: `src/i18n/locales/zh/translation.json`
 - Modify: `src/i18n/locales/en/translation.json`
 
@@ -126,6 +128,7 @@ completion texts: rewrite/expand/format/translate/polish/append."
 ### Task 3: Add rewrite count badge and operation-complete state to overlay frontend
 
 **Files:**
+
 - Modify: `src/overlay/RecordingOverlay.css`
 - Modify: `src/overlay/RecordingOverlay.tsx:15,84-85,131-146,319-348,561-577,590-597`
 
@@ -150,7 +153,8 @@ Append to `src/overlay/RecordingOverlay.css`:
   font-size: 12px;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.82);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
@@ -178,7 +182,12 @@ const unlistenRewriteOperation = await listen<{ operation: string }>(
   "rewrite-operation-complete",
   (event) => {
     const op = event.payload.operation || "unknown";
-    setOperationText(t(`overlay.rewriteOperation.${op}`, t("overlay.rewriteOperation.unknown")));
+    setOperationText(
+      t(
+        `overlay.rewriteOperation.${op}`,
+        t("overlay.rewriteOperation.unknown"),
+      ),
+    );
   },
 );
 if (disposed) {
@@ -193,16 +202,15 @@ unlisteners.push(unlistenRewriteOperation);
 In the `show-overlay` listener in `RecordingOverlay.tsx` (around line 319-348), change the rewrite_count extraction to apply to ALL object payloads — move it outside the `overlayState === "rewrite"` check:
 
 Current code:
+
 ```tsx
-if (
-  overlayState === "rewrite" &&
-  richPayload.rewrite_count !== undefined
-) {
+if (overlayState === "rewrite" && richPayload.rewrite_count !== undefined) {
   setRewriteCount(richPayload.rewrite_count);
 }
 ```
 
 Change to (handle rewrite_count for ALL states, and reset to 0 for non-rewrite recordings):
+
 ```tsx
 if (richPayload.rewrite_count !== undefined) {
   setRewriteCount(richPayload.rewrite_count);
@@ -259,37 +267,41 @@ Remove `{ count: rewriteCount }` since rewrite text is now "处理中…" (no in
 In the render section, modify the non-recording status text block (around line 647-658). Replace:
 
 ```tsx
-{!showRealtimeText && state !== "recording" && !skillConfirmation && (
-  <Flex direction="column" className="status-text" align="center">
-    {!showErrorText && (
-      <Text>{chainedPromptName || statusTextMap[state]}</Text>
-    )}
-    {showErrorText && (
-      <Text style={{ color: "var(--ruby-9)", fontWeight: "bold" }}>
-        {errorText}
-      </Text>
-    )}
-  </Flex>
-)}
+{
+  !showRealtimeText && state !== "recording" && !skillConfirmation && (
+    <Flex direction="column" className="status-text" align="center">
+      {!showErrorText && (
+        <Text>{chainedPromptName || statusTextMap[state]}</Text>
+      )}
+      {showErrorText && (
+        <Text style={{ color: "var(--ruby-9)", fontWeight: "bold" }}>
+          {errorText}
+        </Text>
+      )}
+    </Flex>
+  );
+}
 ```
 
 With:
 
 ```tsx
-{!showRealtimeText && state !== "recording" && !skillConfirmation && (
-  <Flex direction="column" className="status-text" align="center">
-    {!showErrorText && (
-      <Text>
-        {operationText || chainedPromptName || statusTextMap[state]}
-      </Text>
-    )}
-    {showErrorText && (
-      <Text style={{ color: "var(--ruby-9)", fontWeight: "bold" }}>
-        {errorText}
-      </Text>
-    )}
-  </Flex>
-)}
+{
+  !showRealtimeText && state !== "recording" && !skillConfirmation && (
+    <Flex direction="column" className="status-text" align="center">
+      {!showErrorText && (
+        <Text>
+          {operationText || chainedPromptName || statusTextMap[state]}
+        </Text>
+      )}
+      {showErrorText && (
+        <Text style={{ color: "var(--ruby-9)", fontWeight: "bold" }}>
+          {errorText}
+        </Text>
+      )}
+    </Flex>
+  );
+}
 ```
 
 `operationText` takes priority when set (the brief completion flash).
@@ -316,6 +328,7 @@ git commit -m "Add rewrite count badge and operation-complete display to overlay
 ### Task 4: Backend — send rewrite_count during recording and use transcribing state in stop
 
 **Files:**
+
 - Modify: `src-tauri/src/overlay.rs:387-396,398-417`
 - Modify: `src-tauri/src/actions/transcribe.rs:200,236-238,344-350`
 
@@ -487,6 +500,7 @@ git commit -m "Send rewrite_count during recording phase, show transcribing afte
 ### Task 5: Backend — emit LLM processing state and operation-complete from rewrite pipeline
 
 **Files:**
+
 - Modify: `src-tauri/src/actions/post_process/pipeline.rs:819-966`
 - Modify: `src-tauri/src/actions/transcribe.rs:2176-2197`
 

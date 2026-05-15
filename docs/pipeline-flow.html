@@ -1,774 +1,1063 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Votype Pipeline Flow</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
-
-  :root {
-    --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface-2: #1a1a26;
-    --border: #2a2a3a;
-    --text: #e8e8f0;
-    --text-dim: #8888a0;
-    --accent-recording: #ff4444;
-    --accent-transcribing: #ffaa22;
-    --accent-llm: #44aaff;
-    --accent-review: #aa66ff;
-    --accent-paste: #44dd88;
-    --accent-passthrough: #88888a;
-  }
-
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Noto Sans SC', sans-serif;
-    min-height: 100vh;
-    overflow-x: hidden;
-  }
-
-  .container {
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 60px 40px;
-  }
-
-  h1 {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 28px;
-    font-weight: 700;
-    letter-spacing: -0.5px;
-    margin-bottom: 8px;
-    background: linear-gradient(135deg, var(--accent-llm), var(--accent-review));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-
-  .subtitle {
-    font-size: 14px;
-    color: var(--text-dim);
-    margin-bottom: 48px;
-    font-weight: 300;
-  }
-
-  /* ── Overlay State Bar ── */
-  .overlay-bar {
-    display: flex;
-    margin-bottom: 56px;
-    position: relative;
-  }
-
-  .overlay-phase {
-    flex: 1;
-    padding: 14px 18px;
-    text-align: center;
-    font-size: 13px;
-    font-weight: 500;
-    position: relative;
-    border-bottom: 3px solid;
-    transition: all 0.3s;
-  }
-
-  .overlay-phase .label {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    opacity: 0.5;
-    margin-bottom: 4px;
-  }
-
-  .overlay-phase.recording {
-    border-color: var(--accent-recording);
-    background: linear-gradient(180deg, rgba(255,68,68,0.08) 0%, transparent 100%);
-  }
-  .overlay-phase.recording .value { color: var(--accent-recording); }
-
-  .overlay-phase.transcribing {
-    border-color: var(--accent-transcribing);
-    background: linear-gradient(180deg, rgba(255,170,34,0.08) 0%, transparent 100%);
-  }
-  .overlay-phase.transcribing .value { color: var(--accent-transcribing); }
-
-  .overlay-phase.llm {
-    border-color: var(--accent-llm);
-    background: linear-gradient(180deg, rgba(68,170,255,0.08) 0%, transparent 100%);
-    flex: 2;
-  }
-  .overlay-phase.llm .value { color: var(--accent-llm); }
-
-  .overlay-phase.result {
-    border-color: var(--accent-paste);
-    background: linear-gradient(180deg, rgba(68,221,136,0.08) 0%, transparent 100%);
-  }
-  .overlay-phase.result .value { color: var(--accent-paste); }
-
-  .overlay-tag {
-    position: absolute;
-    top: -24px;
-    left: 0;
-    right: 0;
-    text-align: center;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.5px;
-  }
-
-  /* ── Flow Diagram ── */
-  .flow {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-
-  .flow-section {
-    position: relative;
-    padding-left: 80px;
-    min-height: 60px;
-  }
-
-  .flow-section::before {
-    content: '';
-    position: absolute;
-    left: 30px;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    background: var(--border);
-  }
-
-  .flow-section:last-child::before {
-    display: none;
-  }
-
-  .flow-node {
-    position: relative;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px 20px;
-    margin-bottom: 12px;
-    transition: all 0.2s;
-  }
-
-  .flow-node:hover {
-    border-color: #444;
-    transform: translateX(2px);
-  }
-
-  .flow-node::before {
-    content: '';
-    position: absolute;
-    left: -51px;
-    top: 22px;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 2px solid;
-    background: var(--bg);
-    z-index: 1;
-  }
-
-  .flow-node::after {
-    content: '';
-    position: absolute;
-    left: -39px;
-    top: 27px;
-    width: 38px;
-    height: 2px;
-    background: var(--border);
-  }
-
-  .flow-node.recording::before { border-color: var(--accent-recording); background: var(--accent-recording); }
-  .flow-node.transcribing::before { border-color: var(--accent-transcribing); background: var(--accent-transcribing); }
-  .flow-node.llm::before { border-color: var(--accent-llm); background: var(--accent-llm); }
-  .flow-node.review::before { border-color: var(--accent-review); background: var(--accent-review); }
-  .flow-node.paste::before { border-color: var(--accent-paste); background: var(--accent-paste); }
-  .flow-node.passthrough::before { border-color: var(--accent-passthrough); background: var(--accent-passthrough); }
-
-  .flow-node .title {
-    font-weight: 600;
-    font-size: 14px;
-    margin-bottom: 4px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .flow-node .desc {
-    font-size: 12px;
-    color: var(--text-dim);
-    line-height: 1.6;
-  }
-
-  .flow-node .code {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    color: var(--text-dim);
-    background: var(--bg);
-    padding: 2px 6px;
-    border-radius: 3px;
-    display: inline-block;
-    margin-top: 4px;
-  }
-
-  .tag {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 10px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-  }
-
-  .tag-overlay {
-    background: rgba(68,170,255,0.15);
-    color: var(--accent-llm);
-  }
-
-  .tag-fast { background: rgba(68,221,136,0.15); color: var(--accent-paste); }
-  .tag-slow { background: rgba(255,170,34,0.15); color: var(--accent-transcribing); }
-  .tag-user { background: rgba(170,102,255,0.15); color: var(--accent-review); }
-  .tag-new { background: rgba(68,170,255,0.25); color: #77ccff; border: 1px solid rgba(68,170,255,0.3); }
-
-  /* ── Branch ── */
-  .branch {
-    background: var(--surface-2);
-    border: 1px dashed var(--border);
-    border-radius: 8px;
-    padding: 16px 20px;
-    margin: 8px 0 16px 0;
-  }
-
-  .branch-label {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    font-weight: 600;
-    margin-bottom: 12px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .branch-paths {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-
-  .branch-path {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 12px 14px;
-    font-size: 12px;
-    position: relative;
-  }
-
-  .branch-path .condition {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 10px;
-    color: var(--accent-llm);
-    margin-bottom: 6px;
-    font-weight: 600;
-  }
-
-  .branch-path .steps {
-    color: var(--text-dim);
-    line-height: 1.8;
-  }
-
-  .branch-path .steps .step-num {
-    display: inline-block;
-    width: 16px;
-    height: 16px;
-    background: var(--surface-2);
-    border-radius: 50%;
-    text-align: center;
-    line-height: 16px;
-    font-size: 9px;
-    font-family: 'JetBrains Mono', monospace;
-    margin-right: 4px;
-    color: var(--text);
-  }
-
-  /* ── Section Headers ── */
-  .section-header {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    padding: 8px 0 16px 80px;
-    position: relative;
-  }
-
-  .section-header::before {
-    content: '';
-    position: absolute;
-    left: 30px;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    background: var(--border);
-  }
-
-  .section-header.recording { color: var(--accent-recording); }
-  .section-header.transcribing { color: var(--accent-transcribing); }
-  .section-header.llm { color: var(--accent-llm); }
-  .section-header.result { color: var(--accent-paste); }
-
-  /* ── Duration annotation ── */
-  .duration {
-    position: absolute;
-    right: 16px;
-    top: 50%;
-    transform: translateY(-50%);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 10px;
-    color: var(--text-dim);
-    opacity: 0.6;
-  }
-
-  /* ── Legend ── */
-  .legend {
-    margin-top: 48px;
-    padding: 20px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    display: flex;
-    gap: 24px;
-    flex-wrap: wrap;
-  }
-
-  .legend-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    color: var(--text-dim);
-  }
-
-  .legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-  }
-
-  /* ── Timing diagram ── */
-  .timing {
-    margin-top: 48px;
-  }
-
-  .timing h2 {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 16px;
-    font-weight: 600;
-    margin-bottom: 20px;
-    color: var(--text);
-  }
-
-  .timing-row {
-    display: flex;
-    align-items: center;
-    margin-bottom: 6px;
-    height: 36px;
-  }
-
-  .timing-label {
-    width: 120px;
-    font-size: 12px;
-    font-weight: 500;
-    text-align: right;
-    padding-right: 16px;
-    flex-shrink: 0;
-  }
-
-  .timing-bar-container {
-    flex: 1;
-    position: relative;
-    height: 28px;
-  }
-
-  .timing-bar {
-    position: absolute;
-    height: 28px;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 10px;
-    font-weight: 500;
-    color: rgba(255,255,255,0.9);
-    min-width: 20px;
-    transition: all 0.3s;
-  }
-
-  .timing-bar:hover {
-    filter: brightness(1.2);
-    transform: scaleY(1.1);
-  }
-
-  .timing-scale {
-    display: flex;
-    padding-left: 120px;
-    margin-top: 8px;
-    position: relative;
-  }
-
-  .timing-scale::before {
-    content: '';
-    position: absolute;
-    left: 120px;
-    right: 0;
-    top: 0;
-    height: 1px;
-    background: var(--border);
-  }
-
-  .timing-tick {
-    position: absolute;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 9px;
-    color: var(--text-dim);
-    top: 6px;
-  }
-
-  .timing-tick::before {
-    content: '';
-    position: absolute;
-    top: -7px;
-    left: 50%;
-    width: 1px;
-    height: 5px;
-    background: var(--border);
-  }
-
-  /* ── Callout ── */
-  .callout {
-    margin-top: 32px;
-    padding: 16px 20px;
-    border-left: 3px solid var(--accent-llm);
-    background: rgba(68,170,255,0.05);
-    border-radius: 0 6px 6px 0;
-    font-size: 13px;
-    line-height: 1.7;
-    color: var(--text-dim);
-  }
-
-  .callout strong {
-    color: var(--text);
-  }
-
-  .callout-fix {
-    border-left-color: var(--accent-paste);
-    background: rgba(68,221,136,0.05);
-  }
-
-  .arrow-down {
-    text-align: center;
-    padding: 4px 0;
-    color: var(--text-dim);
-    font-size: 16px;
-    padding-left: 80px;
-    position: relative;
-  }
-
-  .arrow-down::before {
-    content: '';
-    position: absolute;
-    left: 30px;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    background: var(--border);
-  }
-</style>
-</head>
-<body>
-<div class="container">
-
-  <h1>Votype Pipeline Flow</h1>
-  <p class="subtitle">从录音到粘贴的完整流程 · Overlay 状态转换 · 延迟分析</p>
-
-  <!-- Overlay State Timeline Bar -->
-  <div class="overlay-bar">
-    <div class="overlay-phase recording">
-      <div class="overlay-tag" style="color: var(--accent-recording);">OVERLAY</div>
-      <div class="label">State 1</div>
-      <div class="value">🎙 录音中</div>
-    </div>
-    <div class="overlay-phase transcribing">
-      <div class="label">State 2</div>
-      <div class="value">⏳ 转录中</div>
-    </div>
-    <div class="overlay-phase llm">
-      <div class="label">State 3 <span class="tag tag-new">NOW</span></div>
-      <div class="value">✨ 润色中</div>
-    </div>
-    <div class="overlay-phase result">
-      <div class="label">State 4</div>
-      <div class="value">✅ 隐藏 / 粘贴</div>
-    </div>
-  </div>
-
-  <!-- Flow Diagram -->
-  <div class="flow">
-
-    <div class="section-header recording">Phase 1 — 录音</div>
-
-    <div class="flow-section">
-      <div class="flow-node recording">
-        <div class="title">用户按住快捷键 <span class="tag tag-overlay">overlay: recording</span></div>
-        <div class="desc">麦克风采集音频，Overlay 显示波形 + 实时转写</div>
-        <div class="duration">持续按住</div>
-      </div>
-    </div>
-
-    <div class="section-header transcribing">Phase 2 — 转录</div>
-
-    <div class="flow-section">
-      <div class="flow-node transcribing">
-        <div class="title">松开快捷键 → ASR 处理 <span class="tag tag-overlay">overlay: transcribing</span></div>
-        <div class="desc">
-          在线 ASR 或本地 Whisper/SenseVoice 处理完整音频<br>
-          同时保存音频到数据库（pre-save）
-        </div>
-        <div class="duration">0.5~3s</div>
-      </div>
-    </div>
-
-    <div class="section-header llm">Phase 3 — 后处理 Pipeline</div>
-
-    <div class="flow-section">
-      <div class="flow-node llm">
-        <div class="title">
-          进入 unified_post_process()
-          <span class="tag tag-new">立即切换 overlay: llm</span>
-        </div>
-        <div class="desc">
-          <strong>修复前：</strong>overlay 仍显示"转录中"，直到实际 LLM 调用才切换<br>
-          <strong>修复后：</strong>进入 pipeline 第一行就显示"润色中"
-        </div>
-        <div class="code">pipeline.rs:57 → show_llm_processing_overlay()</div>
-      </div>
-    </div>
-
-    <div class="flow-section">
-      <div class="flow-node llm">
-        <div class="title">Step 1: 历史缓存匹配</div>
-        <div class="desc">短文本 + 启用 Smart Routing → 查 SQLite 是否有完全匹配的润色结果</div>
-        <div class="duration">&lt;1ms</div>
-      </div>
-    </div>
-
-    <div class="flow-section">
-      <div class="flow-node llm">
-        <div class="title">Step 2: Intent 意图分析 <span class="tag tag-slow">LLM 调用</span></div>
-        <div class="desc">
-          短文本时调用 Intent 模型，分类为 PassThrough / LitePolish / FullPolish<br>
-          同时判断 needs_hotword、language、token_count
-        </div>
-        <div class="duration">1~2s</div>
-      </div>
-
-      <div class="branch">
-        <div class="branch-label">⑂ Intent 分支</div>
-        <div class="branch-paths">
-          <div class="branch-path">
-            <div class="condition">PassThrough (无需润色)</div>
-            <div class="steps">
-              直接返回原文<br>
-              <strong>不调用 LLM</strong><br>
-              → 跳到 Phase 4
-            </div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Votype Pipeline Flow</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap");
+
+      :root {
+        --bg: #0a0a0f;
+        --surface: #12121a;
+        --surface-2: #1a1a26;
+        --border: #2a2a3a;
+        --text: #e8e8f0;
+        --text-dim: #8888a0;
+        --accent-recording: #ff4444;
+        --accent-transcribing: #ffaa22;
+        --accent-llm: #44aaff;
+        --accent-review: #aa66ff;
+        --accent-paste: #44dd88;
+        --accent-passthrough: #88888a;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Noto Sans SC", sans-serif;
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
+
+      .container {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 60px 40px;
+      }
+
+      h1 {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+        margin-bottom: 8px;
+        background: linear-gradient(
+          135deg,
+          var(--accent-llm),
+          var(--accent-review)
+        );
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .subtitle {
+        font-size: 14px;
+        color: var(--text-dim);
+        margin-bottom: 48px;
+        font-weight: 300;
+      }
+
+      /* ── Overlay State Bar ── */
+      .overlay-bar {
+        display: flex;
+        margin-bottom: 56px;
+        position: relative;
+      }
+
+      .overlay-phase {
+        flex: 1;
+        padding: 14px 18px;
+        text-align: center;
+        font-size: 13px;
+        font-weight: 500;
+        position: relative;
+        border-bottom: 3px solid;
+        transition: all 0.3s;
+      }
+
+      .overlay-phase .label {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        opacity: 0.5;
+        margin-bottom: 4px;
+      }
+
+      .overlay-phase.recording {
+        border-color: var(--accent-recording);
+        background: linear-gradient(
+          180deg,
+          rgba(255, 68, 68, 0.08) 0%,
+          transparent 100%
+        );
+      }
+      .overlay-phase.recording .value {
+        color: var(--accent-recording);
+      }
+
+      .overlay-phase.transcribing {
+        border-color: var(--accent-transcribing);
+        background: linear-gradient(
+          180deg,
+          rgba(255, 170, 34, 0.08) 0%,
+          transparent 100%
+        );
+      }
+      .overlay-phase.transcribing .value {
+        color: var(--accent-transcribing);
+      }
+
+      .overlay-phase.llm {
+        border-color: var(--accent-llm);
+        background: linear-gradient(
+          180deg,
+          rgba(68, 170, 255, 0.08) 0%,
+          transparent 100%
+        );
+        flex: 2;
+      }
+      .overlay-phase.llm .value {
+        color: var(--accent-llm);
+      }
+
+      .overlay-phase.result {
+        border-color: var(--accent-paste);
+        background: linear-gradient(
+          180deg,
+          rgba(68, 221, 136, 0.08) 0%,
+          transparent 100%
+        );
+      }
+      .overlay-phase.result .value {
+        color: var(--accent-paste);
+      }
+
+      .overlay-tag {
+        position: absolute;
+        top: -24px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        letter-spacing: 0.5px;
+      }
+
+      /* ── Flow Diagram ── */
+      .flow {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+
+      .flow-section {
+        position: relative;
+        padding-left: 80px;
+        min-height: 60px;
+      }
+
+      .flow-section::before {
+        content: "";
+        position: absolute;
+        left: 30px;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--border);
+      }
+
+      .flow-section:last-child::before {
+        display: none;
+      }
+
+      .flow-node {
+        position: relative;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px 20px;
+        margin-bottom: 12px;
+        transition: all 0.2s;
+      }
+
+      .flow-node:hover {
+        border-color: #444;
+        transform: translateX(2px);
+      }
+
+      .flow-node::before {
+        content: "";
+        position: absolute;
+        left: -51px;
+        top: 22px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2px solid;
+        background: var(--bg);
+        z-index: 1;
+      }
+
+      .flow-node::after {
+        content: "";
+        position: absolute;
+        left: -39px;
+        top: 27px;
+        width: 38px;
+        height: 2px;
+        background: var(--border);
+      }
+
+      .flow-node.recording::before {
+        border-color: var(--accent-recording);
+        background: var(--accent-recording);
+      }
+      .flow-node.transcribing::before {
+        border-color: var(--accent-transcribing);
+        background: var(--accent-transcribing);
+      }
+      .flow-node.llm::before {
+        border-color: var(--accent-llm);
+        background: var(--accent-llm);
+      }
+      .flow-node.review::before {
+        border-color: var(--accent-review);
+        background: var(--accent-review);
+      }
+      .flow-node.paste::before {
+        border-color: var(--accent-paste);
+        background: var(--accent-paste);
+      }
+      .flow-node.passthrough::before {
+        border-color: var(--accent-passthrough);
+        background: var(--accent-passthrough);
+      }
+
+      .flow-node .title {
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .flow-node .desc {
+        font-size: 12px;
+        color: var(--text-dim);
+        line-height: 1.6;
+      }
+
+      .flow-node .code {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: var(--text-dim);
+        background: var(--bg);
+        padding: 2px 6px;
+        border-radius: 3px;
+        display: inline-block;
+        margin-top: 4px;
+      }
+
+      .tag {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+      }
+
+      .tag-overlay {
+        background: rgba(68, 170, 255, 0.15);
+        color: var(--accent-llm);
+      }
+
+      .tag-fast {
+        background: rgba(68, 221, 136, 0.15);
+        color: var(--accent-paste);
+      }
+      .tag-slow {
+        background: rgba(255, 170, 34, 0.15);
+        color: var(--accent-transcribing);
+      }
+      .tag-user {
+        background: rgba(170, 102, 255, 0.15);
+        color: var(--accent-review);
+      }
+      .tag-new {
+        background: rgba(68, 170, 255, 0.25);
+        color: #77ccff;
+        border: 1px solid rgba(68, 170, 255, 0.3);
+      }
+
+      /* ── Branch ── */
+      .branch {
+        background: var(--surface-2);
+        border: 1px dashed var(--border);
+        border-radius: 8px;
+        padding: 16px 20px;
+        margin: 8px 0 16px 0;
+      }
+
+      .branch-label {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        font-weight: 600;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .branch-paths {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .branch-path {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 12px 14px;
+        font-size: 12px;
+        position: relative;
+      }
+
+      .branch-path .condition {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        color: var(--accent-llm);
+        margin-bottom: 6px;
+        font-weight: 600;
+      }
+
+      .branch-path .steps {
+        color: var(--text-dim);
+        line-height: 1.8;
+      }
+
+      .branch-path .steps .step-num {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        background: var(--surface-2);
+        border-radius: 50%;
+        text-align: center;
+        line-height: 16px;
+        font-size: 9px;
+        font-family: "JetBrains Mono", monospace;
+        margin-right: 4px;
+        color: var(--text);
+      }
+
+      /* ── Section Headers ── */
+      .section-header {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        padding: 8px 0 16px 80px;
+        position: relative;
+      }
+
+      .section-header::before {
+        content: "";
+        position: absolute;
+        left: 30px;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--border);
+      }
+
+      .section-header.recording {
+        color: var(--accent-recording);
+      }
+      .section-header.transcribing {
+        color: var(--accent-transcribing);
+      }
+      .section-header.llm {
+        color: var(--accent-llm);
+      }
+      .section-header.result {
+        color: var(--accent-paste);
+      }
+
+      /* ── Duration annotation ── */
+      .duration {
+        position: absolute;
+        right: 16px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        color: var(--text-dim);
+        opacity: 0.6;
+      }
+
+      /* ── Legend ── */
+      .legend {
+        margin-top: 48px;
+        padding: 20px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        display: flex;
+        gap: 24px;
+        flex-wrap: wrap;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--text-dim);
+      }
+
+      .legend-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+
+      /* ── Timing diagram ── */
+      .timing {
+        margin-top: 48px;
+      }
+
+      .timing h2 {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 20px;
+        color: var(--text);
+      }
+
+      .timing-row {
+        display: flex;
+        align-items: center;
+        margin-bottom: 6px;
+        height: 36px;
+      }
+
+      .timing-label {
+        width: 120px;
+        font-size: 12px;
+        font-weight: 500;
+        text-align: right;
+        padding-right: 16px;
+        flex-shrink: 0;
+      }
+
+      .timing-bar-container {
+        flex: 1;
+        position: relative;
+        height: 28px;
+      }
+
+      .timing-bar {
+        position: absolute;
+        height: 28px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.9);
+        min-width: 20px;
+        transition: all 0.3s;
+      }
+
+      .timing-bar:hover {
+        filter: brightness(1.2);
+        transform: scaleY(1.1);
+      }
+
+      .timing-scale {
+        display: flex;
+        padding-left: 120px;
+        margin-top: 8px;
+        position: relative;
+      }
+
+      .timing-scale::before {
+        content: "";
+        position: absolute;
+        left: 120px;
+        right: 0;
+        top: 0;
+        height: 1px;
+        background: var(--border);
+      }
+
+      .timing-tick {
+        position: absolute;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 9px;
+        color: var(--text-dim);
+        top: 6px;
+      }
+
+      .timing-tick::before {
+        content: "";
+        position: absolute;
+        top: -7px;
+        left: 50%;
+        width: 1px;
+        height: 5px;
+        background: var(--border);
+      }
+
+      /* ── Callout ── */
+      .callout {
+        margin-top: 32px;
+        padding: 16px 20px;
+        border-left: 3px solid var(--accent-llm);
+        background: rgba(68, 170, 255, 0.05);
+        border-radius: 0 6px 6px 0;
+        font-size: 13px;
+        line-height: 1.7;
+        color: var(--text-dim);
+      }
+
+      .callout strong {
+        color: var(--text);
+      }
+
+      .callout-fix {
+        border-left-color: var(--accent-paste);
+        background: rgba(68, 221, 136, 0.05);
+      }
+
+      .arrow-down {
+        text-align: center;
+        padding: 4px 0;
+        color: var(--text-dim);
+        font-size: 16px;
+        padding-left: 80px;
+        position: relative;
+      }
+
+      .arrow-down::before {
+        content: "";
+        position: absolute;
+        left: 30px;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Votype Pipeline Flow</h1>
+      <p class="subtitle">
+        从录音到粘贴的完整流程 · Overlay 状态转换 · 延迟分析
+      </p>
+
+      <!-- Overlay State Timeline Bar -->
+      <div class="overlay-bar">
+        <div class="overlay-phase recording">
+          <div class="overlay-tag" style="color: var(--accent-recording)">
+            OVERLAY
           </div>
-          <div class="branch-path">
-            <div class="condition">LitePolish / FullPolish</div>
-            <div class="steps">
-              继续 Step 3-4<br>
-              选择模型 → 执行润色
+          <div class="label">State 1</div>
+          <div class="value">🎙 录音中</div>
+        </div>
+        <div class="overlay-phase transcribing">
+          <div class="label">State 2</div>
+          <div class="value">⏳ 转录中</div>
+        </div>
+        <div class="overlay-phase llm">
+          <div class="label">State 3 <span class="tag tag-new">NOW</span></div>
+          <div class="value">✨ 润色中</div>
+        </div>
+        <div class="overlay-phase result">
+          <div class="label">State 4</div>
+          <div class="value">✅ 隐藏 / 粘贴</div>
+        </div>
+      </div>
+
+      <!-- Flow Diagram -->
+      <div class="flow">
+        <div class="section-header recording">Phase 1 — 录音</div>
+
+        <div class="flow-section">
+          <div class="flow-node recording">
+            <div class="title">
+              用户按住快捷键
+              <span class="tag tag-overlay">overlay: recording</span>
             </div>
+            <div class="desc">麦克风采集音频，Overlay 显示波形 + 实时转写</div>
+            <div class="duration">持续按住</div>
           </div>
         </div>
-      </div>
-    </div>
 
-    <div class="flow-section">
-      <div class="flow-node llm">
-        <div class="title">Step 3: 模型选择</div>
-        <div class="desc">
-          LitePolish → 轻量模型 + lite prompt<br>
-          FullPolish → 完整模型 / Multi-Model 并发
-        </div>
-        <div class="duration">&lt;1ms</div>
-      </div>
-    </div>
+        <div class="section-header transcribing">Phase 2 — 转录</div>
 
-    <div class="flow-section">
-      <div class="flow-node llm">
-        <div class="title">Step 4: 执行 LLM 润色 <span class="tag tag-slow">LLM 调用</span></div>
-        <div class="desc">
-          构建 Prompt（注入 hotword、session context、scenario hint）<br>
-          调用 LLM API，timeout 10s，支持 fallback 链
-        </div>
-        <div class="duration">1~8s</div>
-      </div>
-    </div>
-
-    <div class="section-header result">Phase 4 — 结果处理</div>
-
-    <div class="flow-section">
-      <div class="flow-node paste">
-        <div class="title">Pipeline 返回结果 <span class="tag tag-fast">&lt;1ms</span></div>
-        <div class="desc">
-          PipelineResult 枚举：Skipped / Cached / PassThrough / SingleModel / MultiModel
-        </div>
-      </div>
-
-      <div class="branch">
-        <div class="branch-label">⑂ should_review 分支 — 这决定了后续行为</div>
-        <div class="branch-paths">
-          <div class="branch-path" style="border-color: var(--accent-review);">
-            <div class="condition" style="color: var(--accent-review);">should_review = true (默认 Auto)</div>
-            <div class="steps">
-              <span class="step-num">1</span> 写数据库 <span class="tag tag-fast">&lt;5ms</span><br>
-              <span class="step-num">2</span> 打开 Review Window<br>
-              <span class="step-num">3</span> 隐藏 Overlay<br>
-              <span class="step-num">4</span> <strong style="color: var(--accent-review);">等待用户确认</strong> ← 这就是"间隔"<br>
-              <span class="step-num">5</span> 用户按 Enter / 点击 → 粘贴
+        <div class="flow-section">
+          <div class="flow-node transcribing">
+            <div class="title">
+              松开快捷键 → ASR 处理
+              <span class="tag tag-overlay">overlay: transcribing</span>
             </div>
+            <div class="desc">
+              在线 ASR 或本地 Whisper/SenseVoice 处理完整音频<br />
+              同时保存音频到数据库（pre-save）
+            </div>
+            <div class="duration">0.5~3s</div>
           </div>
-          <div class="branch-path" style="border-color: var(--accent-paste);">
-            <div class="condition" style="color: var(--accent-paste);">should_review = false (Never)</div>
-            <div class="steps">
-              <span class="step-num">1</span> 写数据库 <span class="tag tag-fast">&lt;5ms</span><br>
-              <span class="step-num">2</span> run_on_main_thread<br>
-              <span class="step-num">3</span> 隐藏 Overlay + 立即粘贴<br>
-              <br>
-              <em style="font-size: 11px;">无额外等待</em>
+        </div>
+
+        <div class="section-header llm">Phase 3 — 后处理 Pipeline</div>
+
+        <div class="flow-section">
+          <div class="flow-node llm">
+            <div class="title">
+              进入 unified_post_process()
+              <span class="tag tag-new">立即切换 overlay: llm</span>
+            </div>
+            <div class="desc">
+              <strong>修复前：</strong>overlay 仍显示"转录中"，直到实际 LLM
+              调用才切换<br />
+              <strong>修复后：</strong>进入 pipeline 第一行就显示"润色中"
+            </div>
+            <div class="code">
+              pipeline.rs:57 → show_llm_processing_overlay()
             </div>
           </div>
         </div>
+
+        <div class="flow-section">
+          <div class="flow-node llm">
+            <div class="title">Step 1: 历史缓存匹配</div>
+            <div class="desc">
+              短文本 + 启用 Smart Routing → 查 SQLite 是否有完全匹配的润色结果
+            </div>
+            <div class="duration">&lt;1ms</div>
+          </div>
+        </div>
+
+        <div class="flow-section">
+          <div class="flow-node llm">
+            <div class="title">
+              Step 2: Intent 意图分析 <span class="tag tag-slow">LLM 调用</span>
+            </div>
+            <div class="desc">
+              短文本时调用 Intent 模型，分类为 PassThrough / LitePolish /
+              FullPolish<br />
+              同时判断 needs_hotword、language、token_count
+            </div>
+            <div class="duration">1~2s</div>
+          </div>
+
+          <div class="branch">
+            <div class="branch-label">⑂ Intent 分支</div>
+            <div class="branch-paths">
+              <div class="branch-path">
+                <div class="condition">PassThrough (无需润色)</div>
+                <div class="steps">
+                  直接返回原文<br />
+                  <strong>不调用 LLM</strong><br />
+                  → 跳到 Phase 4
+                </div>
+              </div>
+              <div class="branch-path">
+                <div class="condition">LitePolish / FullPolish</div>
+                <div class="steps">
+                  继续 Step 3-4<br />
+                  选择模型 → 执行润色
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flow-section">
+          <div class="flow-node llm">
+            <div class="title">Step 3: 模型选择</div>
+            <div class="desc">
+              LitePolish → 轻量模型 + lite prompt<br />
+              FullPolish → 完整模型 / Multi-Model 并发
+            </div>
+            <div class="duration">&lt;1ms</div>
+          </div>
+        </div>
+
+        <div class="flow-section">
+          <div class="flow-node llm">
+            <div class="title">
+              Step 4: 执行 LLM 润色 <span class="tag tag-slow">LLM 调用</span>
+            </div>
+            <div class="desc">
+              构建 Prompt（注入 hotword、session context、scenario hint）<br />
+              调用 LLM API，timeout 10s，支持 fallback 链
+            </div>
+            <div class="duration">1~8s</div>
+          </div>
+        </div>
+
+        <div class="section-header result">Phase 4 — 结果处理</div>
+
+        <div class="flow-section">
+          <div class="flow-node paste">
+            <div class="title">
+              Pipeline 返回结果 <span class="tag tag-fast">&lt;1ms</span>
+            </div>
+            <div class="desc">
+              PipelineResult 枚举：Skipped / Cached / PassThrough / SingleModel
+              / MultiModel
+            </div>
+          </div>
+
+          <div class="branch">
+            <div class="branch-label">
+              ⑂ should_review 分支 — 这决定了后续行为
+            </div>
+            <div class="branch-paths">
+              <div
+                class="branch-path"
+                style="border-color: var(--accent-review)"
+              >
+                <div class="condition" style="color: var(--accent-review)">
+                  should_review = true (默认 Auto)
+                </div>
+                <div class="steps">
+                  <span class="step-num">1</span> 写数据库
+                  <span class="tag tag-fast">&lt;5ms</span><br />
+                  <span class="step-num">2</span> 打开 Review Window<br />
+                  <span class="step-num">3</span> 隐藏 Overlay<br />
+                  <span class="step-num">4</span>
+                  <strong style="color: var(--accent-review)"
+                    >等待用户确认</strong
+                  >
+                  ← 这就是"间隔"<br />
+                  <span class="step-num">5</span> 用户按 Enter / 点击 → 粘贴
+                </div>
+              </div>
+              <div
+                class="branch-path"
+                style="border-color: var(--accent-paste)"
+              >
+                <div class="condition" style="color: var(--accent-paste)">
+                  should_review = false (Never)
+                </div>
+                <div class="steps">
+                  <span class="step-num">1</span> 写数据库
+                  <span class="tag tag-fast">&lt;5ms</span><br />
+                  <span class="step-num">2</span> run_on_main_thread<br />
+                  <span class="step-num">3</span> 隐藏 Overlay + 立即粘贴<br />
+                  <br />
+                  <em style="font-size: 11px">无额外等待</em>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Timing Diagram -->
+      <div class="timing">
+        <h2>时序对比 · 修复前 vs 修复后</h2>
+
+        <!-- Before fix -->
+        <div
+          style="
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: var(--text-dim);
+            padding-left: 120px;
+            font-weight: 500;
+          "
+        >
+          修复前
+        </div>
+
+        <div class="timing-row">
+          <div class="timing-label">Overlay</div>
+          <div class="timing-bar-container">
+            <div
+              class="timing-bar"
+              style="left: 0%; width: 15%; background: var(--accent-recording)"
+            >
+              录音中
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 15%;
+                width: 40%;
+                background: var(--accent-transcribing);
+              "
+            >
+              转录中 ← 实际已在 pipeline
+            </div>
+            <div
+              class="timing-bar"
+              style="left: 55%; width: 30%; background: var(--accent-llm)"
+            >
+              润色中
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 85%;
+                width: 15%;
+                background: var(--accent-paste);
+                opacity: 0.4;
+              "
+            >
+              结果
+            </div>
+          </div>
+        </div>
+
+        <div class="timing-row">
+          <div class="timing-label">实际工作</div>
+          <div class="timing-bar-container">
+            <div
+              class="timing-bar"
+              style="
+                left: 0%;
+                width: 15%;
+                background: var(--accent-recording);
+                opacity: 0.3;
+              "
+            >
+              录音
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 15%;
+                width: 15%;
+                background: var(--accent-transcribing);
+                opacity: 0.3;
+              "
+            >
+              ASR
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 30%;
+                width: 15%;
+                background: rgba(68, 170, 255, 0.4);
+                border: 1px dashed var(--accent-llm);
+              "
+            >
+              Intent
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 45%;
+                width: 40%;
+                background: rgba(68, 170, 255, 0.4);
+                border: 1px dashed var(--accent-llm);
+              "
+            >
+              LLM 润色
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 85%;
+                width: 15%;
+                background: var(--accent-paste);
+                opacity: 0.3;
+              "
+            >
+              结果
+            </div>
+          </div>
+        </div>
+
+        <div style="height: 24px"></div>
+
+        <!-- After fix -->
+        <div
+          style="
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: var(--accent-paste);
+            padding-left: 120px;
+            font-weight: 500;
+          "
+        >
+          修复后 ✓
+        </div>
+
+        <div class="timing-row">
+          <div class="timing-label">Overlay</div>
+          <div class="timing-bar-container">
+            <div
+              class="timing-bar"
+              style="left: 0%; width: 15%; background: var(--accent-recording)"
+            >
+              录音中
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 15%;
+                width: 15%;
+                background: var(--accent-transcribing);
+              "
+            >
+              转录中
+            </div>
+            <div
+              class="timing-bar"
+              style="left: 30%; width: 55%; background: var(--accent-llm)"
+            >
+              ✨ 润色中（含 Intent 分析）
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 85%;
+                width: 15%;
+                background: var(--accent-paste);
+                opacity: 0.4;
+              "
+            >
+              结果
+            </div>
+          </div>
+        </div>
+
+        <div class="timing-row">
+          <div class="timing-label">实际工作</div>
+          <div class="timing-bar-container">
+            <div
+              class="timing-bar"
+              style="
+                left: 0%;
+                width: 15%;
+                background: var(--accent-recording);
+                opacity: 0.3;
+              "
+            >
+              录音
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 15%;
+                width: 15%;
+                background: var(--accent-transcribing);
+                opacity: 0.3;
+              "
+            >
+              ASR
+            </div>
+            <div
+              class="timing-bar"
+              style="left: 30%; width: 15%; background: rgba(68, 170, 255, 0.4)"
+            >
+              Intent
+            </div>
+            <div
+              class="timing-bar"
+              style="left: 45%; width: 40%; background: rgba(68, 170, 255, 0.4)"
+            >
+              LLM 润色
+            </div>
+            <div
+              class="timing-bar"
+              style="
+                left: 85%;
+                width: 15%;
+                background: var(--accent-paste);
+                opacity: 0.3;
+              "
+            >
+              结果
+            </div>
+          </div>
+        </div>
+
+        <!-- Scale -->
+        <div class="timing-scale">
+          <div class="timing-tick" style="left: 120px">0s</div>
+          <div class="timing-tick" style="left: calc(120px + 15%)">~1s</div>
+          <div class="timing-tick" style="left: calc(120px + 30%)">~2s</div>
+          <div class="timing-tick" style="left: calc(120px + 45%)">~4s</div>
+          <div class="timing-tick" style="left: calc(120px + 65%)">~6s</div>
+          <div class="timing-tick" style="left: calc(120px + 85%)">~8s</div>
+        </div>
+      </div>
+
+      <!-- Callouts -->
+      <div class="callout" style="margin-top: 40px">
+        <strong>关于"润色中"之后的等待：</strong><br />
+        如果你的 App Policy 是 <strong>Auto</strong>（默认），润色完成后会打开
+        Review Window 等待你确认。 这个"间隔"就是 Review Window 在等你按 Enter
+        或点击确认按钮。<br />
+        如果你的 App Policy 是
+        <strong>Never</strong>，润色完成后会立即粘贴，中间不应有明显延迟。
+      </div>
+
+      <div class="callout callout-fix">
+        <strong>本次修复：</strong><br />
+        将 <code>show_llm_processing_overlay()</code> 从 pipeline 深处（Step 3/4
+        执行前）<strong>提前到 pipeline 入口</strong>。<br />
+        修复后 Overlay 状态与实际工作阶段完全对齐：ASR
+        完成即刻显示"润色中"，覆盖 Intent 分析 + LLM 调用全过程。
+      </div>
+
+      <!-- Legend -->
+      <div class="legend">
+        <div class="legend-item">
+          <div
+            class="legend-dot"
+            style="background: var(--accent-recording)"
+          ></div>
+          录音中
+        </div>
+        <div class="legend-item">
+          <div
+            class="legend-dot"
+            style="background: var(--accent-transcribing)"
+          ></div>
+          转录中 (ASR)
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background: var(--accent-llm)"></div>
+          润色中 (Pipeline)
+        </div>
+        <div class="legend-item">
+          <div
+            class="legend-dot"
+            style="background: var(--accent-review)"
+          ></div>
+          Review Window
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background: var(--accent-paste)"></div>
+          粘贴完成
+        </div>
+        <div class="legend-item">
+          <span class="tag tag-new">NOW</span>
+          本次修复点
+        </div>
       </div>
     </div>
-
-  </div>
-
-  <!-- Timing Diagram -->
-  <div class="timing">
-    <h2>时序对比 · 修复前 vs 修复后</h2>
-
-    <!-- Before fix -->
-    <div style="margin-bottom: 8px; font-size: 12px; color: var(--text-dim); padding-left: 120px; font-weight: 500;">修复前</div>
-
-    <div class="timing-row">
-      <div class="timing-label">Overlay</div>
-      <div class="timing-bar-container">
-        <div class="timing-bar" style="left: 0%; width: 15%; background: var(--accent-recording);">录音中</div>
-        <div class="timing-bar" style="left: 15%; width: 40%; background: var(--accent-transcribing);">转录中 ← 实际已在 pipeline</div>
-        <div class="timing-bar" style="left: 55%; width: 30%; background: var(--accent-llm);">润色中</div>
-        <div class="timing-bar" style="left: 85%; width: 15%; background: var(--accent-paste); opacity: 0.4;">结果</div>
-      </div>
-    </div>
-
-    <div class="timing-row">
-      <div class="timing-label">实际工作</div>
-      <div class="timing-bar-container">
-        <div class="timing-bar" style="left: 0%; width: 15%; background: var(--accent-recording); opacity: 0.3;">录音</div>
-        <div class="timing-bar" style="left: 15%; width: 15%; background: var(--accent-transcribing); opacity: 0.3;">ASR</div>
-        <div class="timing-bar" style="left: 30%; width: 15%; background: rgba(68,170,255,0.4); border: 1px dashed var(--accent-llm);">Intent</div>
-        <div class="timing-bar" style="left: 45%; width: 40%; background: rgba(68,170,255,0.4); border: 1px dashed var(--accent-llm);">LLM 润色</div>
-        <div class="timing-bar" style="left: 85%; width: 15%; background: var(--accent-paste); opacity: 0.3;">结果</div>
-      </div>
-    </div>
-
-    <div style="height: 24px;"></div>
-
-    <!-- After fix -->
-    <div style="margin-bottom: 8px; font-size: 12px; color: var(--accent-paste); padding-left: 120px; font-weight: 500;">修复后 ✓</div>
-
-    <div class="timing-row">
-      <div class="timing-label">Overlay</div>
-      <div class="timing-bar-container">
-        <div class="timing-bar" style="left: 0%; width: 15%; background: var(--accent-recording);">录音中</div>
-        <div class="timing-bar" style="left: 15%; width: 15%; background: var(--accent-transcribing);">转录中</div>
-        <div class="timing-bar" style="left: 30%; width: 55%; background: var(--accent-llm);">✨ 润色中（含 Intent 分析）</div>
-        <div class="timing-bar" style="left: 85%; width: 15%; background: var(--accent-paste); opacity: 0.4;">结果</div>
-      </div>
-    </div>
-
-    <div class="timing-row">
-      <div class="timing-label">实际工作</div>
-      <div class="timing-bar-container">
-        <div class="timing-bar" style="left: 0%; width: 15%; background: var(--accent-recording); opacity: 0.3;">录音</div>
-        <div class="timing-bar" style="left: 15%; width: 15%; background: var(--accent-transcribing); opacity: 0.3;">ASR</div>
-        <div class="timing-bar" style="left: 30%; width: 15%; background: rgba(68,170,255,0.4);">Intent</div>
-        <div class="timing-bar" style="left: 45%; width: 40%; background: rgba(68,170,255,0.4);">LLM 润色</div>
-        <div class="timing-bar" style="left: 85%; width: 15%; background: var(--accent-paste); opacity: 0.3;">结果</div>
-      </div>
-    </div>
-
-    <!-- Scale -->
-    <div class="timing-scale">
-      <div class="timing-tick" style="left: 120px;">0s</div>
-      <div class="timing-tick" style="left: calc(120px + 15%);">~1s</div>
-      <div class="timing-tick" style="left: calc(120px + 30%);">~2s</div>
-      <div class="timing-tick" style="left: calc(120px + 45%);">~4s</div>
-      <div class="timing-tick" style="left: calc(120px + 65%);">~6s</div>
-      <div class="timing-tick" style="left: calc(120px + 85%);">~8s</div>
-    </div>
-  </div>
-
-  <!-- Callouts -->
-  <div class="callout" style="margin-top: 40px;">
-    <strong>关于"润色中"之后的等待：</strong><br>
-    如果你的 App Policy 是 <strong>Auto</strong>（默认），润色完成后会打开 Review Window 等待你确认。
-    这个"间隔"就是 Review Window 在等你按 Enter 或点击确认按钮。<br>
-    如果你的 App Policy 是 <strong>Never</strong>，润色完成后会立即粘贴，中间不应有明显延迟。
-  </div>
-
-  <div class="callout callout-fix">
-    <strong>本次修复：</strong><br>
-    将 <code>show_llm_processing_overlay()</code> 从 pipeline 深处（Step 3/4 执行前）<strong>提前到 pipeline 入口</strong>。<br>
-    修复后 Overlay 状态与实际工作阶段完全对齐：ASR 完成即刻显示"润色中"，覆盖 Intent 分析 + LLM 调用全过程。
-  </div>
-
-  <!-- Legend -->
-  <div class="legend">
-    <div class="legend-item">
-      <div class="legend-dot" style="background: var(--accent-recording);"></div>
-      录音中
-    </div>
-    <div class="legend-item">
-      <div class="legend-dot" style="background: var(--accent-transcribing);"></div>
-      转录中 (ASR)
-    </div>
-    <div class="legend-item">
-      <div class="legend-dot" style="background: var(--accent-llm);"></div>
-      润色中 (Pipeline)
-    </div>
-    <div class="legend-item">
-      <div class="legend-dot" style="background: var(--accent-review);"></div>
-      Review Window
-    </div>
-    <div class="legend-item">
-      <div class="legend-dot" style="background: var(--accent-paste);"></div>
-      粘贴完成
-    </div>
-    <div class="legend-item">
-      <span class="tag tag-new">NOW</span>
-      本次修复点
-    </div>
-  </div>
-
-</div>
-</body>
+  </body>
 </html>

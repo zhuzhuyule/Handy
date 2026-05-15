@@ -266,8 +266,7 @@ export const Sidebar: React.FC<SidebarProps & { collapsed: boolean }> = ({
   const { t } = useTranslation();
   const { expertMode, updateSetting } = useSettings();
 
-  const sections = SECTION_ORDER
-    .map((id) => ({ id, ...SECTIONS_CONFIG[id] }))
+  const sections = SECTION_ORDER.map((id) => ({ id, ...SECTIONS_CONFIG[id] }))
     .filter((config) => config.enabled(expertMode))
     .map((config) => ({
       ...config,

@@ -23,7 +23,7 @@ export const SettingsGroup: React.FC<SettingsGroupProps> = ({
   cardProps,
   contentClassName,
   framed = true,
-  noContent
+  noContent,
 }) => {
   const header = (
     <Box mb={noContent ? "0" : "2"}>

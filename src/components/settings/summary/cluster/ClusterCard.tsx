@@ -14,14 +14,13 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconPencil,
-  IconThumbDown,
-  IconThumbUp,
   IconTrash,
   IconX,
 } from "@tabler/icons-react";
 import { useState } from "react";
 import { Card } from "../../../ui/Card";
 import type { TaskCluster } from "../summaryTypes";
+import { ClusterFeedbackButtons } from "./ClusterFeedbackButtons";
 
 interface ClusterCardProps {
   cluster: TaskCluster;
@@ -34,7 +33,6 @@ interface ClusterCardProps {
   onOpenSplit: () => void;
   onOpenMerge: () => void;
   onOpenDelete: () => void;
-  onThumb: (thumb: "up" | "down") => Promise<void>;
   detailSlot?: React.ReactNode;
 }
 
@@ -63,7 +61,6 @@ export function ClusterCard({
   onOpenSplit,
   onOpenMerge,
   onOpenDelete,
-  onThumb,
   detailSlot,
 }: ClusterCardProps) {
   const [editingTitle, setEditingTitle] = useState(false);
@@ -267,24 +264,7 @@ export function ClusterCard({
               删除
             </button>
           </Flex>
-          <Flex gap="1">
-            <IconButton
-              size="1"
-              variant="ghost"
-              onClick={() => onThumb("up")}
-              aria-label="点赞"
-            >
-              <IconThumbUp size={14} />
-            </IconButton>
-            <IconButton
-              size="1"
-              variant="ghost"
-              onClick={() => onThumb("down")}
-              aria-label="点踩"
-            >
-              <IconThumbDown size={14} />
-            </IconButton>
-          </Flex>
+          <ClusterFeedbackButtons clusterId={cluster.id} />
         </Flex>
       </Flex>
     </Card>

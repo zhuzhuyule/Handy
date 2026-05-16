@@ -1843,6 +1843,66 @@ impl HistoryManager {
         Ok(entries)
     }
 
+    /// Look up history entries by a batch of ids. Returns entries ordered by
+    /// id ascending; callers may reorder as needed. Deleted rows are still
+    /// included so callers can detect stale references. An empty `ids` input
+    /// returns an empty Vec without touching the database.
+    pub async fn get_entries_by_ids(&self, ids: &[i64]) -> Result<Vec<HistoryEntry>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.get_connection()?;
+        let placeholders: String = (1..=ids.len())
+            .map(|i| format!("?{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, streaming_text, streaming_asr_model, post_processed_text, post_process_prompt, post_process_prompt_id, post_process_model, duration_ms, char_count, corrected_char_count, transcription_ms, language, asr_model, app_name, window_title, post_process_history, token_count, llm_call_count, post_process_rejected, deleted FROM transcription_history WHERE id IN ({}) ORDER BY id ASC",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params_vec: Vec<Box<dyn rusqlite::ToSql>> = ids
+            .iter()
+            .map(|id| Box::new(*id) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(HistoryEntry {
+                id: row.get("id")?,
+                file_name: row.get("file_name")?,
+                timestamp: row.get("timestamp")?,
+                saved: row.get("saved")?,
+                title: row.get("title")?,
+                transcription_text: row.get("transcription_text")?,
+                streaming_text: row.get("streaming_text")?,
+                streaming_asr_model: row.get("streaming_asr_model")?,
+                post_processed_text: row.get("post_processed_text")?,
+                post_process_prompt: row.get("post_process_prompt")?,
+                post_process_prompt_id: row.get("post_process_prompt_id")?,
+                post_process_model: row.get("post_process_model")?,
+                duration_ms: row.get("duration_ms")?,
+                char_count: row.get("char_count")?,
+                corrected_char_count: row.get("corrected_char_count")?,
+                transcription_ms: row.get("transcription_ms")?,
+                language: row.get("language")?,
+                asr_model: row.get("asr_model")?,
+                app_name: row.get("app_name")?,
+                window_title: row.get("window_title")?,
+                post_process_history: row.get("post_process_history")?,
+                token_count: row.get("token_count")?,
+                llm_call_count: row.get("llm_call_count")?,
+                post_process_rejected: row.get("post_process_rejected")?,
+                deleted: row.get("deleted")?,
+            })
+        })?;
+        let mut entries = Vec::new();
+        for r in rows {
+            entries.push(r?);
+        }
+        Ok(entries)
+    }
+
     pub async fn toggle_saved_status(&self, id: i64) -> Result<()> {
         let conn = self.get_connection()?;
 

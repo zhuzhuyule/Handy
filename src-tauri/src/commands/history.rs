@@ -97,6 +97,20 @@ pub async fn get_history_entries_paginated(
     })
 }
 
+/// Batch lookup of history entries by id. Order matches the DB (id ascending);
+/// callers should reorder by timestamp if they want chronological output.
+#[tauri::command]
+pub async fn get_history_entries_by_ids(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    ids: Vec<i64>,
+) -> Result<Vec<HistoryEntry>, String> {
+    history_manager
+        .get_entries_by_ids(&ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn toggle_history_entry_saved(
     _app: AppHandle,

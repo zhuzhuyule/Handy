@@ -11,17 +11,43 @@ export interface DailyOverview {
 }
 
 export interface TaskCluster {
+  id: string;
+  summary_id: number;
+  date: string;
   title: string;
-  status: string;
-  time_span: string;
+  status: string; // "进行中" | "完成" | "卡住" | "已搁置"
+  time_span: string | null;
   apps: string[];
-  entry_count: number;
+  source_history_ids: number[];
   total_duration_ms: number;
-  summary: string;
+  entry_count: number;
+  summary: string | null;
   blockers: string[];
   next_step: string | null;
   keywords: string[];
+  is_user_modified: boolean;
+  user_modified_fields: string[];
+  created_at: number;
+  updated_at: number;
 }
+
+export interface ClusterFeedback {
+  id: number;
+  cluster_id: string;
+  thumb: "up" | "down";
+  note: string | null;
+  created_at: number;
+}
+
+export type AuxSection =
+  | "stats"
+  | "recap"
+  | "profile"
+  | "hotword"
+  | "export"
+  | "feedback";
+
+export type ViewMode = "day" | "week" | "month";
 
 export interface ContextPack {
   active_tasks: string[];
@@ -40,6 +66,7 @@ export interface SummaryStats {
   by_hour: number[];
   top_skills: string[];
   daily_overview?: DailyOverview | null;
+  /** @deprecated Use the task_clusters table via `useTaskClusters` hook (T21 will remove this). */
   task_clusters?: TaskCluster[];
   context_pack?: ContextPack | null;
 }

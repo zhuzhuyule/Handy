@@ -471,6 +471,92 @@ impl TaskClustersManager {
         Ok(())
     }
 
+    pub fn has_clusters_for_summary(&self, summary_id: i64) -> Result<bool> {
+        let conn = self.get_connection()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM task_clusters WHERE summary_id=?",
+            [summary_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Migrate legacy `summary.stats.task_clusters` JSON into the new task_clusters table.
+    /// Idempotent: if any clusters already exist for `summary_id`, no-op.
+    /// Returns the number of clusters inserted.
+    pub fn migrate_legacy_stats_clusters(
+        &self,
+        summary_id: i64,
+        date: &str,
+        legacy_json: &str,
+    ) -> Result<usize> {
+        if self.has_clusters_for_summary(summary_id)? {
+            return Ok(0);
+        }
+        #[derive(serde::Deserialize)]
+        struct LegacyCluster {
+            #[serde(default)]
+            title: String,
+            #[serde(default)]
+            status: String,
+            #[serde(default)]
+            time_span: Option<String>,
+            #[serde(default)]
+            apps: Vec<String>,
+            #[serde(default)]
+            entry_count: i64,
+            #[serde(default)]
+            total_duration_ms: i64,
+            #[serde(default)]
+            summary: Option<String>,
+            #[serde(default)]
+            blockers: Vec<String>,
+            #[serde(default)]
+            next_step: Option<String>,
+            #[serde(default)]
+            keywords: Vec<String>,
+        }
+        let legacy: Vec<LegacyCluster> = serde_json::from_str(legacy_json).unwrap_or_default();
+        if legacy.is_empty() {
+            return Ok(0);
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut inserted = 0_usize;
+        for l in legacy {
+            let cluster = TaskCluster {
+                id: Self::new_cluster_id(),
+                summary_id,
+                date: date.to_string(),
+                title: if l.title.is_empty() {
+                    "(untitled)".into()
+                } else {
+                    l.title
+                },
+                status: if l.status.is_empty() {
+                    "进行中".into()
+                } else {
+                    l.status
+                },
+                time_span: l.time_span,
+                apps: l.apps,
+                source_history_ids: vec![],
+                total_duration_ms: l.total_duration_ms,
+                entry_count: l.entry_count,
+                summary: l.summary,
+                blockers: l.blockers,
+                next_step: l.next_step,
+                keywords: l.keywords,
+                is_user_modified: false,
+                user_modified_fields: vec![],
+                created_at: now,
+                updated_at: now,
+            };
+            self.upsert(&cluster)?;
+            inserted += 1;
+        }
+        Ok(inserted)
+    }
+
     pub fn update_field(&self, cluster_id: &str, field: &str, value: &str) -> Result<()> {
         let allowed = ["title", "status", "next_step"];
         if !allowed.contains(&field) {
@@ -859,5 +945,71 @@ mod tests {
         let remaining = m.get_by_date("2026-05-15").unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].title, "User");
+    }
+
+    #[test]
+    fn test_migrate_legacy_stats_clusters_inserts_clusters() {
+        let (_tmp, m) = setup_db();
+
+        let legacy_json = r#"[
+            {
+                "title": "Legacy A",
+                "status": "进行中",
+                "time_span": "10:00-11:00",
+                "apps": ["Cursor"],
+                "entry_count": 3,
+                "total_duration_ms": 3600000,
+                "summary": "x",
+                "blockers": [],
+                "next_step": null,
+                "keywords": []
+            }
+        ]"#;
+
+        let inserted = m
+            .migrate_legacy_stats_clusters(42, "2026-04-01", legacy_json)
+            .unwrap();
+        assert_eq!(inserted, 1);
+
+        let rows = m.get_by_date("2026-04-01").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Legacy A");
+        assert_eq!(rows[0].source_history_ids, Vec::<i64>::new());
+        assert!(!rows[0].is_user_modified);
+
+        // Re-run is idempotent
+        let again = m
+            .migrate_legacy_stats_clusters(42, "2026-04-01", legacy_json)
+            .unwrap();
+        assert_eq!(again, 0);
+        let rows2 = m.get_by_date("2026-04-01").unwrap();
+        assert_eq!(rows2.len(), 1);
+    }
+
+    #[test]
+    fn test_migrate_legacy_stats_clusters_handles_empty_or_invalid_json() {
+        let (_tmp, m) = setup_db();
+        // empty array
+        assert_eq!(
+            m.migrate_legacy_stats_clusters(1, "2026-04-01", "[]")
+                .unwrap(),
+            0
+        );
+        // invalid JSON — falls back to empty via unwrap_or_default
+        assert_eq!(
+            m.migrate_legacy_stats_clusters(2, "2026-04-01", "not json")
+                .unwrap(),
+            0
+        );
+        // partial fields
+        let partial = r#"[{"title": "Min"}]"#;
+        assert_eq!(
+            m.migrate_legacy_stats_clusters(3, "2026-04-01", partial)
+                .unwrap(),
+            1
+        );
+        let rows = m.get_by_date("2026-04-01").unwrap();
+        assert_eq!(rows[0].title, "Min");
+        assert_eq!(rows[0].status, "进行中"); // default
     }
 }

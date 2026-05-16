@@ -585,6 +585,42 @@ impl SummaryManager {
         Ok(summaries)
     }
 
+    /// For T23 legacy cluster migration. Returns rows whose stats JSON contains a
+    /// non-empty task_clusters array. The date is derived from `period_start`
+    /// (unix seconds) in the local timezone; if conversion fails, falls back to
+    /// `1970-01-01`.
+    pub fn list_all_summaries_with_legacy_clusters(&self) -> Result<Vec<(i64, String, String)>> {
+        use chrono::{Local, TimeZone};
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, period_start, stats FROM summaries WHERE stats LIKE '%task_clusters%'",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let period_start: i64 = row.get(1)?;
+            let stats: String = row.get(2)?;
+            Ok((id, period_start, stats))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (id, period_start, stats) = r?;
+            // period_start is stored in unix seconds (see `start_local.timestamp()` callers).
+            let date = Local
+                .timestamp_opt(period_start, 0)
+                .single()
+                .map(|dt| dt.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "1970-01-01".into());
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stats) {
+                if let Some(arr) = v.get("task_clusters") {
+                    if arr.is_array() && !arr.as_array().map(|a| a.is_empty()).unwrap_or(true) {
+                        out.push((id, date, arr.to_string()));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Get user profile
     pub fn get_user_profile(&self) -> Result<UserProfile> {
         let conn = self.get_connection()?;

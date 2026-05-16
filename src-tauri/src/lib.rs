@@ -200,6 +200,38 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         db_path.clone(),
     ));
     app_handle.manage(task_clusters_manager.clone());
+
+    // T23: Migrate legacy `summary.stats.task_clusters` JSON into the new
+    // `task_clusters` table at startup. Runs in the background so it never
+    // blocks app startup, and is idempotent (no-op if the table already has
+    // rows for the summary).
+    {
+        let tc = task_clusters_manager.clone();
+        let sm = summary_manager.clone();
+        tauri::async_runtime::spawn(async move {
+            match tauri::async_runtime::spawn_blocking(move || {
+                sm.list_all_summaries_with_legacy_clusters()
+            })
+            .await
+            {
+                Ok(Ok(rows)) => {
+                    for (summary_id, date, legacy_json) in rows {
+                        if let Err(e) =
+                            tc.migrate_legacy_stats_clusters(summary_id, &date, &legacy_json)
+                        {
+                            eprintln!(
+                                "legacy cluster migration failed for summary {}: {}",
+                                summary_id, e
+                            );
+                        }
+                    }
+                }
+                Ok(Err(e)) => eprintln!("failed to list legacy summaries: {}", e),
+                Err(e) => eprintln!("legacy summary list join error: {}", e),
+            }
+        });
+    }
+
     let cluster_feedback_manager =
         Arc::new(crate::managers::cluster_feedback::ClusterFeedbackManager::new(db_path.clone()));
     app_handle.manage(cluster_feedback_manager.clone());

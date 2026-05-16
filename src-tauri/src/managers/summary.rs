@@ -18,9 +18,12 @@ pub struct DailyOverview {
     pub next_focus: String,
 }
 
-/// DEPRECATED: replaced by `crate::managers::task_clusters::TaskCluster` (v2 with UUID + source_history_ids). Will be removed in T22.
+/// Legacy task cluster snapshot kept ONLY for backward-compat deserialization
+/// of summary rows written before T22. New code uses
+/// `crate::managers::task_clusters::TaskCluster` (v2 with UUID + source_history_ids).
+/// Never populated on writes after T22; T23 will migrate any remaining legacy rows.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct TaskCluster {
+pub struct LegacyTaskClusterSnapshot {
     pub title: String,
     pub status: String,
     pub time_span: String,
@@ -53,8 +56,10 @@ pub struct SummaryStats {
     pub top_skills: Vec<String>,
     #[serde(default)]
     pub daily_overview: Option<DailyOverview>,
+    /// Legacy snapshots — never written by new code (T22+). Kept for backward-compat
+    /// deserialization of summary rows produced before T22. T23 will migrate these out.
     #[serde(default)]
-    pub task_clusters: Vec<TaskCluster>,
+    pub task_clusters: Vec<LegacyTaskClusterSnapshot>,
     #[serde(default)]
     pub context_pack: Option<ContextPack>,
 }
@@ -138,328 +143,6 @@ impl SummaryManager {
             task_clusters: Vec::new(),
             context_pack: None,
         }
-    }
-
-    fn extract_keywords(text: &str) -> Vec<String> {
-        const KEYWORDS: [(&str, &str); 22] = [
-            ("provider", "Provider"),
-            ("api key", "API Key"),
-            ("base url", "Base URL"),
-            ("customer", "Customer"),
-            ("custom", "Custom"),
-            ("proxy", "Proxy"),
-            ("summary", "Summary"),
-            ("prompt", "Prompt"),
-            ("review", "Review"),
-            ("rewrite", "Rewrite"),
-            ("model", "Model"),
-            ("rate limit", "Rate Limit"),
-            ("logseq", "Logseq"),
-            ("mcp", "MCP"),
-            ("telegram", "Telegram"),
-            ("payment", "Payment"),
-            ("encrypt", "Encrypt"),
-            ("aigne", "Aigne"),
-            ("handy", "Handy"),
-            ("提供商", "提供商"),
-            ("密钥", "API Key"),
-            ("总结", "总结"),
-        ];
-
-        let normalized = text.to_lowercase();
-        let mut keywords = Vec::new();
-        for (needle, label) in KEYWORDS {
-            if normalized.contains(needle) && !keywords.iter().any(|item| item == label) {
-                keywords.push(label.to_string());
-            }
-        }
-        keywords
-    }
-
-    fn find_blockers(text: &str) -> Vec<String> {
-        const BLOCKERS: [(&str, &str); 18] = [
-            ("问题", "出现问题"),
-            ("失败", "执行失败"),
-            ("异常", "出现异常"),
-            ("报错", "出现报错"),
-            ("卡住", "流程卡住"),
-            ("不对", "结果不对"),
-            ("没有", "配置未生效"),
-            ("无法", "当前无法完成"),
-            ("不能", "当前不能完成"),
-            ("不显示", "界面未正确显示"),
-            ("不生效", "配置没有生效"),
-            ("read only", "只读状态异常"),
-            ("error", "发生错误"),
-            ("failed", "执行失败"),
-            ("issue", "存在问题"),
-            ("stuck", "流程卡住"),
-            ("why", "存在待解释问题"),
-            ("invalid", "配置无效"),
-        ];
-
-        let normalized = text.to_lowercase();
-        let mut blockers = Vec::new();
-        for (needle, label) in BLOCKERS {
-            if normalized.contains(needle) && !blockers.iter().any(|item| item == label) {
-                blockers.push(label.to_string());
-            }
-        }
-        blockers
-    }
-
-    fn derive_title(apps: &[String], keywords: &[String]) -> String {
-        if keywords.iter().any(|item| item == "Aigne") {
-            return "Aigne 账号与链路排查".to_string();
-        }
-        if keywords.iter().any(|item| item == "Handy")
-            || keywords.iter().any(|item| item == "Provider")
-            || keywords.iter().any(|item| item == "API Key")
-            || keywords.iter().any(|item| item == "Base URL")
-        {
-            return "Handy Provider 与配置调整".to_string();
-        }
-        if keywords.iter().any(|item| item == "Rate Limit")
-            || keywords.iter().any(|item| item == "Model")
-            || keywords.iter().any(|item| item == "Logseq")
-            || keywords.iter().any(|item| item == "MCP")
-        {
-            return "模型与资料调研".to_string();
-        }
-        if apps.iter().any(|item| item == "Telegram") {
-            return "外部沟通与信息同步".to_string();
-        }
-        if let Some(first_keyword) = keywords.first() {
-            return format!("{first_keyword} 相关推进");
-        }
-        if let Some(first_app) = apps.first() {
-            return format!("{first_app} 场景工作");
-        }
-        "今日任务推进".to_string()
-    }
-
-    fn derive_status(progress_signals: usize, blockers: usize) -> String {
-        if progress_signals > 0 && blockers == 0 {
-            "有推进".to_string()
-        } else if progress_signals > 0 && blockers > 0 {
-            "推进中".to_string()
-        } else if blockers > 0 {
-            "卡住".to_string()
-        } else {
-            "整理中".to_string()
-        }
-    }
-
-    fn derive_context_bias(app_counts: &std::collections::HashMap<String, AppStats>) -> String {
-        let app_names: Vec<&str> = app_counts.keys().map(String::as_str).collect();
-        if app_names
-            .iter()
-            .any(|app| matches!(*app, "Codex" | "VSCode" | "Xcode" | "Cursor"))
-        {
-            return "coding".to_string();
-        }
-        if app_names
-            .iter()
-            .any(|app| matches!(*app, "Comet" | "Arc" | "Safari" | "Chrome"))
-        {
-            return "research".to_string();
-        }
-        if app_names
-            .iter()
-            .any(|app| matches!(*app, "Telegram" | "微信" | "WeChat"))
-        {
-            return "communication".to_string();
-        }
-        "general".to_string()
-    }
-
-    fn build_recap(
-        &self,
-        entries: &[RichAnalysisEntry],
-        by_app: &std::collections::HashMap<String, AppStats>,
-    ) -> (Option<DailyOverview>, Vec<TaskCluster>, Option<ContextPack>) {
-        if entries.is_empty() {
-            return (None, Vec::new(), None);
-        }
-
-        let mut segments: Vec<Vec<&RichAnalysisEntry>> = Vec::new();
-        let mut current: Vec<&RichAnalysisEntry> = Vec::new();
-        let mut last_timestamp: Option<i64> = None;
-        let mut last_app: Option<&str> = None;
-
-        for entry in entries {
-            let should_split = if let (Some(prev_ts), Some(prev_app)) = (last_timestamp, last_app) {
-                let ts_gap = entry.timestamp.saturating_sub(prev_ts);
-                ts_gap > 20 * 60 || (entry.app != prev_app && ts_gap > 8 * 60)
-            } else {
-                false
-            };
-
-            if should_split && !current.is_empty() {
-                segments.push(std::mem::take(&mut current));
-            }
-            current.push(entry);
-            last_timestamp = Some(entry.timestamp);
-            last_app = Some(entry.app.as_str());
-        }
-
-        if !current.is_empty() {
-            segments.push(current);
-        }
-
-        let mut clusters = Vec::new();
-        for segment in segments {
-            let mut apps = Vec::new();
-            let mut keywords = Vec::new();
-            let mut blockers = Vec::new();
-            let mut progress_signals = 0usize;
-            let mut duration_ms = 0i64;
-            let mut representative = Vec::new();
-            let start = segment
-                .first()
-                .map(|entry| entry.time.clone())
-                .unwrap_or_default();
-            let end = segment
-                .last()
-                .map(|entry| entry.time.clone())
-                .unwrap_or_default();
-
-            for entry in &segment {
-                if !apps.iter().any(|item| item == &entry.app) {
-                    apps.push(entry.app.clone());
-                }
-                for keyword in Self::extract_keywords(&format!("{} {}", entry.window, entry.text)) {
-                    if !keywords.iter().any(|item| item == &keyword) && keywords.len() < 5 {
-                        keywords.push(keyword);
-                    }
-                }
-                for blocker in Self::find_blockers(&entry.text) {
-                    if !blockers.iter().any(|item| item == &blocker) && blockers.len() < 4 {
-                        blockers.push(blocker);
-                    }
-                }
-                if matches!(entry.review_action.as_str(), "accept" | "edit_accept")
-                    || entry.has_polish
-                    || entry.text.contains("完成")
-                    || entry.text.contains("改成")
-                    || entry.text.to_lowercase().contains("fixed")
-                {
-                    progress_signals += 1;
-                }
-                duration_ms += entry.duration_sec * 1000;
-                if representative.len() < 2 && !entry.text.trim().is_empty() {
-                    representative.push(entry.text.chars().take(36).collect::<String>());
-                }
-            }
-
-            let title = Self::derive_title(&apps, &keywords);
-            let status = Self::derive_status(progress_signals, blockers.len());
-            let summary = if representative.is_empty() {
-                format!("围绕 {title} 进行了 {} 次交互。", segment.len())
-            } else {
-                format!("{}。", representative.join("；"))
-            };
-            let next_step = if blockers.is_empty() {
-                representative
-                    .last()
-                    .map(|item| format!("继续跟进：{}", item.chars().take(24).collect::<String>()))
-            } else {
-                blockers.first().map(|item| format!("优先处理：{item}"))
-            };
-
-            clusters.push(TaskCluster {
-                title,
-                status,
-                time_span: format!("{start} - {end}"),
-                apps,
-                entry_count: segment.len() as i64,
-                total_duration_ms: duration_ms,
-                summary,
-                blockers,
-                next_step,
-                keywords,
-            });
-        }
-
-        clusters.sort_by(|a, b| {
-            b.total_duration_ms
-                .cmp(&a.total_duration_ms)
-                .then_with(|| b.entry_count.cmp(&a.entry_count))
-        });
-        clusters.truncate(5);
-
-        let key_progress = clusters
-            .iter()
-            .take(3)
-            .map(|cluster| format!("{}：{}", cluster.title, cluster.summary))
-            .collect::<Vec<_>>();
-        let friction_points = clusters
-            .iter()
-            .filter_map(|cluster| {
-                cluster
-                    .blockers
-                    .first()
-                    .map(|blocker| format!("{}：{}", cluster.title, blocker))
-            })
-            .take(3)
-            .collect::<Vec<_>>();
-        let next_focus = clusters
-            .iter()
-            .find_map(|cluster| cluster.next_step.clone())
-            .unwrap_or_else(|| "继续收敛今天最重要的任务并补齐关键缺口。".to_string());
-        let headline = if let Some(primary) = clusters.first() {
-            format!(
-                "今天主要围绕 {} 等 {} 个任务推进。",
-                primary.title,
-                clusters.len()
-            )
-        } else {
-            "今天有一些零散记录，但尚未形成明确主线。".to_string()
-        };
-
-        let task_entities = clusters
-            .iter()
-            .flat_map(|cluster| cluster.keywords.iter().cloned())
-            .fold(Vec::<String>::new(), |mut acc, item| {
-                if !acc.iter().any(|existing| existing == &item) && acc.len() < 8 {
-                    acc.push(item);
-                }
-                acc
-            });
-
-        let pending_followups = clusters
-            .iter()
-            .filter_map(|cluster| cluster.next_step.clone())
-            .take(4)
-            .collect::<Vec<_>>();
-
-        let recent_decisions = clusters
-            .iter()
-            .filter(|cluster| cluster.status != "卡住")
-            .map(|cluster| format!("{}：{}", cluster.title, cluster.status))
-            .take(3)
-            .collect::<Vec<_>>();
-
-        (
-            Some(DailyOverview {
-                headline,
-                key_progress,
-                friction_points,
-                next_focus,
-            }),
-            clusters.clone(),
-            Some(ContextPack {
-                active_tasks: clusters
-                    .iter()
-                    .take(3)
-                    .map(|item| item.title.clone())
-                    .collect(),
-                recent_decisions,
-                pending_followups,
-                task_entities,
-                context_bias: Self::derive_context_bias(by_app),
-            }),
-        )
     }
 
     /// Calculate stats for a given time range from history entries
@@ -594,10 +277,9 @@ impl SummaryManager {
             top_skills.push(row?);
         }
 
-        let rich_entries = self.get_entries_for_analysis_rich(start_ts, end_ts, 500)?;
-        let (daily_overview, task_clusters, context_pack) =
-            self.build_recap(&rich_entries, &by_app);
-
+        // T22: legacy heuristic recap (`build_recap`) removed; daily overview, task clusters,
+        // and context pack now come from the LLM-driven task_clusters table. Legacy fields
+        // remain in the struct only for backward-compat deserialization of pre-T22 rows.
         Ok(SummaryStats {
             entry_count,
             total_duration_ms,
@@ -606,9 +288,9 @@ impl SummaryManager {
             by_app,
             by_hour,
             top_skills,
-            daily_overview,
-            task_clusters,
-            context_pack,
+            daily_overview: None,
+            task_clusters: Vec::new(),
+            context_pack: None,
         })
     }
 

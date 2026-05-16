@@ -946,6 +946,7 @@ pub fn update_model_chain(
     match field.as_str() {
         "selected_asr_model" => settings.selected_asr_model = chain,
         "selected_prompt_model" => settings.selected_prompt_model = chain,
+        "selected_clustering_model" => settings.selected_clustering_model = chain,
         "post_process_intent_model" => settings.post_process_intent_model = chain,
         "post_process_translation_model" => settings.post_process_translation_model = chain,
         "length_routing_short_model" => settings.length_routing_short_model = chain,

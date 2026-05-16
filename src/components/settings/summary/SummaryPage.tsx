@@ -9,6 +9,7 @@ import { RecapSection } from "./aux/RecapSection";
 import { StatsSection } from "./aux/StatsSection";
 import { useSummary } from "./hooks/useSummary";
 import { useTaskClusters } from "./hooks/useTaskClusters";
+import { ClusteringModelSelector } from "./shared/ClusteringModelSelector";
 import { PeriodSelector } from "./shared/PeriodSelector";
 import { RegenerateButton } from "./shared/RegenerateButton";
 import { useSummaryStore } from "./stores/summaryStore";
@@ -131,10 +132,13 @@ export const SummaryPage: React.FC = () => {
       <Flex justify="between" align="center" mb="3">
         <PeriodSelector />
         {viewMode === "day" && (
-          <RegenerateButton
-            onRegenerate={() => generate(true)}
-            loading={generating}
-          />
+          <Flex align="center" gap="2">
+            <ClusteringModelSelector />
+            <RegenerateButton
+              onRegenerate={() => generate(true)}
+              loading={generating}
+            />
+          </Flex>
         )}
       </Flex>
 

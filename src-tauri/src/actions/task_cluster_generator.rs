@@ -438,12 +438,37 @@ pub async fn generate_task_clusters(
 }
 
 /// Resolve provider + model + optional cached_model_id for the clustering call.
-/// Reuses the same selection logic as the rest of the post-process pipeline:
-///   1. Active post-process provider (from settings.post_process_provider_id, etc.)
-///   2. Model: selected_prompt_model → cached_models lookup → post_process_models[provider.id]
+///
+/// Lookup order:
+///   1. `selected_clustering_model` → cached_models lookup (may switch to a different
+///      provider than the active post-process provider when the user picked a model
+///      hosted elsewhere).
+///   2. Active post-process provider + `selected_prompt_model` → cached_models lookup
+///      (must match the active provider).
+///   3. Fallback to `post_process_models[provider.id]`.
 fn resolve_clustering_target(
     settings: &crate::settings::AppSettings,
 ) -> Result<(crate::settings::PostProcessProvider, String, Option<String>)> {
+    // Tier 1: dedicated clustering model — may use any provider.
+    if let Some(chain) = &settings.selected_clustering_model {
+        if let Some(cached) = settings
+            .cached_models
+            .iter()
+            .find(|m| m.id == chain.primary_id)
+        {
+            if let Some(provider) = settings
+                .post_process_providers
+                .iter()
+                .find(|p| p.id == cached.provider_id)
+                .cloned()
+            {
+                return Ok((provider, cached.model_id.clone(), Some(cached.id.clone())));
+            }
+        }
+        // fall through if cached model or provider is gone
+    }
+
+    // Tier 2: existing logic — active post-process provider + selected_prompt_model.
     let provider = settings
         .active_post_process_provider()
         .ok_or_else(|| anyhow::anyhow!("no active post-process provider configured"))?

@@ -296,6 +296,9 @@ export const SettingsSchema = z.object({
   online_asr_enabled: z.boolean().optional().default(false),
   selected_asr_model: ModelChainSchema.nullable().optional().default(null),
   selected_prompt_model: ModelChainSchema.nullable().optional().default(null),
+  selected_clustering_model: ModelChainSchema.nullable()
+    .optional()
+    .default(null),
   mute_while_recording: z.boolean().optional().default(false),
   audio_input_auto_enhance: z.boolean().optional().default(true),
   mic_enhance_preferences: z.record(z.boolean()).optional().default({}),

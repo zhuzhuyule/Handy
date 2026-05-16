@@ -949,6 +949,8 @@ pub struct AppSettings {
     #[serde(default, alias = "selected_prompt_model_id")]
     pub selected_prompt_model: Option<ModelChain>,
     #[serde(default)]
+    pub selected_clustering_model: Option<ModelChain>,
+    #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default = "default_audio_input_auto_enhance")]
     pub audio_input_auto_enhance: bool,
@@ -1726,6 +1728,7 @@ pub fn get_default_settings() -> AppSettings {
         online_asr_enabled: false,
         selected_asr_model: None,
         selected_prompt_model: None,
+        selected_clustering_model: None,
         mute_while_recording: false,
         audio_input_auto_enhance: default_audio_input_auto_enhance(),
         mic_enhance_preferences: HashMap::new(),
@@ -2142,6 +2145,7 @@ pub fn cleanup_stale_model_references(settings: &mut AppSettings) -> bool {
     }
 
     clear_chain_if_stale!(settings.selected_prompt_model);
+    clear_chain_if_stale!(settings.selected_clustering_model);
     clear_chain_if_stale!(settings.selected_asr_model);
     clear_chain_if_stale!(settings.post_process_intent_model);
     clear_chain_if_stale!(settings.post_process_translation_model);

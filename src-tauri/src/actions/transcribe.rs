@@ -291,7 +291,6 @@ pub(super) fn set_start_snapshot(
 }
 
 /// 若 slot 中存有指定 `transcription_id` 的快照则取出并清空，否则返回 None 且保留 slot。
-#[allow(dead_code)] // removed in Task 3 when stop() wires this up
 pub(super) fn take_start_snapshot(
     transcription_id: u64,
 ) -> Option<crate::active_window::ActiveWindowInfo> {
@@ -1002,11 +1001,23 @@ impl ShortcutAction for TranscribeAction {
                 let settings = get_settings(&ah);
                 let duration_ms = effective_recording_duration_ms(&samples);
 
-                let active_window_snapshot = active_window::fetch_active_window().ok();
+                // 优先使用 start() 按键瞬间捕获的快照；取不到（fetch 失败 / 路径未接入 / 已被新录音覆盖）
+                // 时退回原行为。Fallback 保证不出现回归。
+                // 见 docs/specs/2026-05-19-capture-active-window-at-start.spec.md
+                let (active_window_snapshot, snapshot_source) =
+                    match take_start_snapshot(current_transcription_id) {
+                        Some(info) => (Some(info), "start"),
+                        None => (active_window::fetch_active_window().ok(), "stop-fallback"),
+                    };
                 if let Some(info) = &active_window_snapshot {
                     debug!(
-                        "Active window (snapshot): app='{}' title='{}' pid={} window_id={}",
-                        info.app_name, info.title, info.process_id, info.window_id
+                        "Active window ({}): app='{}' title='{}' pid={} window_id={}",
+                        snapshot_source, info.app_name, info.title, info.process_id, info.window_id
+                    );
+                } else {
+                    debug!(
+                        "Active window (none, source={}): id={}",
+                        snapshot_source, current_transcription_id
                     );
                 }
                 let selected_text = crate::clipboard::get_selected_text(&ah).ok();

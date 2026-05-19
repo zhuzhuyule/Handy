@@ -302,7 +302,6 @@ pub(super) fn take_start_snapshot(
 }
 
 /// FinishGuard 兜底用：若 slot 仍属于本次录音则清掉，避免长期残留。
-#[allow(dead_code)] // removed in Task 4 when FinishGuard::drop wires this up
 pub(super) fn clear_start_snapshot_if_matches(transcription_id: u64) {
     let mut slot = START_SNAPSHOT.lock().expect("START_SNAPSHOT poisoned");
     if matches!(slot.as_ref(), Some((stored_id, _)) if *stored_id == transcription_id) {
@@ -927,6 +926,11 @@ impl ShortcutAction for TranscribeAction {
             }
             impl Drop for FinishGuard {
                 fn drop(&mut self) {
+                    // 兜底清空 start() 时记录的活动窗口快照：
+                    // - happy path：stop() 的 take_start_snapshot 已经拿走，本次为 no-op。
+                    // - 录音过短 / panic / 异常早退：take 没有发生，这里防止 slot 长期残留。
+                    // 若 slot 已被后续录音覆盖（id 不匹配），保持不动，让新 owner 自己处理。
+                    clear_start_snapshot_if_matches(self.transcription_id);
                     let rm = self.app.state::<Arc<AudioRecordingManager>>();
                     if rm.get_current_transcription_id() == self.transcription_id {
                         shortcut::unregister_cancel_shortcut(&self.app);

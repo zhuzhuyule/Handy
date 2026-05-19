@@ -277,7 +277,7 @@ static START_SNAPSHOT: Lazy<StdMutex<Option<(u64, crate::active_window::ActiveWi
 
 /// 写入 start 时的活动窗口快照。`info = None`（fetch 失败）时不占用 slot，
 /// stop 取回时会按既有兜底再次 `fetch_active_window()`。
-#[allow(dead_code)]
+#[allow(dead_code)] // removed in Task 2 when start() wires this up
 pub(super) fn set_start_snapshot(
     transcription_id: u64,
     info: Option<crate::active_window::ActiveWindowInfo>,
@@ -294,7 +294,7 @@ pub(super) fn set_start_snapshot(
 }
 
 /// 若 slot 中存有指定 `transcription_id` 的快照则取出并清空，否则返回 None 且保留 slot。
-#[allow(dead_code)]
+#[allow(dead_code)] // removed in Task 3 when stop() wires this up
 pub(super) fn take_start_snapshot(
     transcription_id: u64,
 ) -> Option<crate::active_window::ActiveWindowInfo> {
@@ -306,7 +306,7 @@ pub(super) fn take_start_snapshot(
 }
 
 /// FinishGuard 兜底用：若 slot 仍属于本次录音则清掉，避免长期残留。
-#[allow(dead_code)]
+#[allow(dead_code)] // removed in Task 4 when FinishGuard::drop wires this up
 pub(super) fn clear_start_snapshot_if_matches(transcription_id: u64) {
     let mut slot = START_SNAPSHOT.lock().expect("START_SNAPSHOT poisoned");
     if matches!(slot.as_ref(), Some((stored_id, _)) if *stored_id == transcription_id) {

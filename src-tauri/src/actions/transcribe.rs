@@ -270,14 +270,11 @@ async fn maybe_translate_text_for_insert(
 
 /// 在 `start()` 按键瞬间捕获到的活动窗口快照，配对 `transcription_id`。
 /// `stop()` 取回时必须校验 id，避免被后续录音覆盖时仍把旧快照交给已 race 的旧 pipeline。
-// `dead_code` allowed while Task 1 lands the slot ahead of Tasks 2-4 wiring the call sites.
-#[allow(dead_code)]
 static START_SNAPSHOT: Lazy<StdMutex<Option<(u64, crate::active_window::ActiveWindowInfo)>>> =
     Lazy::new(|| StdMutex::new(None));
 
 /// 写入 start 时的活动窗口快照。`info = None`（fetch 失败）时不占用 slot，
 /// stop 取回时会按既有兜底再次 `fetch_active_window()`。
-#[allow(dead_code)] // removed in Task 2 when start() wires this up
 pub(super) fn set_start_snapshot(
     transcription_id: u64,
     info: Option<crate::active_window::ActiveWindowInfo>,
@@ -847,6 +844,22 @@ impl ShortcutAction for TranscribeAction {
 
         if recording_started {
             shortcut::register_cancel_shortcut(app);
+
+            // 按键瞬间记录目标应用：stop() 时即使用户已经切换了焦点，
+            // 我们仍能把转录结果送回最初的那个窗口。
+            // 见 docs/specs/2026-05-19-capture-active-window-at-start.spec.md
+            let start_snapshot = active_window::fetch_active_window().ok();
+            match &start_snapshot {
+                Some(info) => debug!(
+                    "[StartSnapshot] captured id={} app='{}' title='{}' pid={}",
+                    new_id, info.app_name, info.title, info.process_id
+                ),
+                None => log::warn!(
+                    "[StartSnapshot] fetch_active_window failed for id={}, stop() will fallback",
+                    new_id
+                ),
+            }
+            set_start_snapshot(new_id, start_snapshot);
 
             if enable_realtime {
                 let tm_realtime = app.state::<Arc<TranscriptionManager>>().inner().clone();

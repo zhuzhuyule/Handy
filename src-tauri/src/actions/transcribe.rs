@@ -17,7 +17,9 @@ use crate::utils;
 use crate::window_context::VotypeInputMode;
 use anyhow::anyhow;
 use log::{debug, error, info};
+use once_cell::sync::Lazy;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::time::{sleep, timeout};
@@ -263,6 +265,52 @@ async fn maybe_translate_text_for_insert(
             );
             text
         }
+    }
+}
+
+/// 在 `start()` 按键瞬间捕获到的活动窗口快照，配对 `transcription_id`。
+/// `stop()` 取回时必须校验 id，避免被后续录音覆盖时仍把旧快照交给已 race 的旧 pipeline。
+// `dead_code` allowed while Task 1 lands the slot ahead of Tasks 2-4 wiring the call sites.
+#[allow(dead_code)]
+static START_SNAPSHOT: Lazy<StdMutex<Option<(u64, crate::active_window::ActiveWindowInfo)>>> =
+    Lazy::new(|| StdMutex::new(None));
+
+/// 写入 start 时的活动窗口快照。`info = None`（fetch 失败）时不占用 slot，
+/// stop 取回时会按既有兜底再次 `fetch_active_window()`。
+#[allow(dead_code)]
+pub(super) fn set_start_snapshot(
+    transcription_id: u64,
+    info: Option<crate::active_window::ActiveWindowInfo>,
+) {
+    let mut slot = START_SNAPSHOT.lock().expect("START_SNAPSHOT poisoned");
+    match info {
+        Some(info) => {
+            *slot = Some((transcription_id, info));
+        }
+        None => {
+            // 不写 None 占位；若 slot 里存着另一个 id 的旧值，让 owner 的清理来处理。
+        }
+    }
+}
+
+/// 若 slot 中存有指定 `transcription_id` 的快照则取出并清空，否则返回 None 且保留 slot。
+#[allow(dead_code)]
+pub(super) fn take_start_snapshot(
+    transcription_id: u64,
+) -> Option<crate::active_window::ActiveWindowInfo> {
+    let mut slot = START_SNAPSHOT.lock().expect("START_SNAPSHOT poisoned");
+    match slot.as_ref() {
+        Some((stored_id, _)) if *stored_id == transcription_id => slot.take().map(|(_, info)| info),
+        _ => None,
+    }
+}
+
+/// FinishGuard 兜底用：若 slot 仍属于本次录音则清掉，避免长期残留。
+#[allow(dead_code)]
+pub(super) fn clear_start_snapshot_if_matches(transcription_id: u64) {
+    let mut slot = START_SNAPSHOT.lock().expect("START_SNAPSHOT poisoned");
+    if matches!(slot.as_ref(), Some((stored_id, _)) if *stored_id == transcription_id) {
+        *slot = None;
     }
 }
 
@@ -3210,8 +3258,9 @@ fn apply_punct_anchors(raw: &str, anchors: &[PunctAnchor]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_recording_samples, direct_paste_target_pid, effective_recording_duration_ms,
-        resolve_post_process_outcome, should_show_post_process_review_window, PostProcessOutcome,
+        classify_recording_samples, clear_start_snapshot_if_matches, direct_paste_target_pid,
+        effective_recording_duration_ms, resolve_post_process_outcome, set_start_snapshot,
+        should_show_post_process_review_window, take_start_snapshot, PostProcessOutcome,
         RecordingDisposition, EFFECTIVE_RECORDING_TOO_SHORT_MS, WHISPER_SAMPLE_RATE,
     };
     use crate::settings::{AppReviewPolicy, PromptOutputMode};
@@ -3327,5 +3376,78 @@ mod tests {
 
         assert_eq!(direct_paste_target_pid(Some(&snapshot)), Some(42));
         assert_eq!(direct_paste_target_pid(None), None);
+    }
+
+    // 全部 start-snapshot 相关的测试都改写同一个全局 slot。
+    // cargo test 默认并行运行，必须用 test-side Mutex 串行化，否则不同测试间会互相覆盖
+    // 导致 `set + take` 的对偶被打破。
+    static SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn make_test_snapshot(pid: u64, app: &str) -> crate::active_window::ActiveWindowInfo {
+        crate::active_window::ActiveWindowInfo {
+            title: format!("{app}-title"),
+            app_name: app.to_string(),
+            window_id: format!("win-{pid}"),
+            process_id: pid,
+            process_path: format!("/Applications/{app}.app"),
+            position: crate::active_window::WindowPosition {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+        }
+    }
+
+    #[test]
+    fn start_snapshot_take_returns_matching_id_and_clears_slot() {
+        let _guard = SNAPSHOT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let id: u64 = 0xA001_0001;
+        clear_start_snapshot_if_matches(id);
+
+        set_start_snapshot(id, Some(make_test_snapshot(101, "AppA")));
+
+        let taken = take_start_snapshot(id).expect("should return snapshot for matching id");
+        assert_eq!(taken.process_id, 101);
+        assert_eq!(taken.app_name, "AppA");
+
+        assert!(take_start_snapshot(id).is_none());
+    }
+
+    #[test]
+    fn start_snapshot_take_with_mismatching_id_returns_none_and_keeps_slot() {
+        let _guard = SNAPSHOT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let id_owner: u64 = 0xA001_0002;
+        let id_other: u64 = 0xA001_0003;
+        clear_start_snapshot_if_matches(id_owner);
+        clear_start_snapshot_if_matches(id_other);
+
+        set_start_snapshot(id_owner, Some(make_test_snapshot(202, "AppB")));
+
+        assert!(take_start_snapshot(id_other).is_none());
+
+        let taken = take_start_snapshot(id_owner).expect("owner should still take its snapshot");
+        assert_eq!(taken.app_name, "AppB");
+    }
+
+    #[test]
+    fn clear_start_snapshot_if_matches_only_clears_owned_id() {
+        let _guard = SNAPSHOT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let id_owner: u64 = 0xA001_0004;
+        let id_other: u64 = 0xA001_0005;
+        clear_start_snapshot_if_matches(id_owner);
+        clear_start_snapshot_if_matches(id_other);
+
+        set_start_snapshot(id_owner, Some(make_test_snapshot(303, "AppC")));
+
+        clear_start_snapshot_if_matches(id_other);
+        assert!(
+            take_start_snapshot(id_owner).is_some(),
+            "non-matching clear must not drop owner's snapshot"
+        );
+
+        set_start_snapshot(id_owner, Some(make_test_snapshot(303, "AppC")));
+        clear_start_snapshot_if_matches(id_owner);
+        assert!(take_start_snapshot(id_owner).is_none());
     }
 }

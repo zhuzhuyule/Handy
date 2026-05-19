@@ -194,6 +194,10 @@ fn position_on_monitor(monitor: &tauri::Monitor, overlay_position: OverlayPositi
     (x, y)
 }
 
+// macOS doesn't call into focus restoration: the panel-based overlay never
+// steals focus there (see comments in the show_* functions), so the helpers
+// below would be dead code on that target.
+#[cfg(not(target_os = "macos"))]
 fn focused_votype_window_label(app_handle: &AppHandle) -> Option<&'static str> {
     for label in ["review_window", "main"] {
         if app_handle
@@ -208,6 +212,7 @@ fn focused_votype_window_label(app_handle: &AppHandle) -> Option<&'static str> {
     None
 }
 
+#[cfg(not(target_os = "macos"))]
 fn restore_votype_focus_after_overlay_show(app_handle: &AppHandle, label: Option<&'static str>) {
     let Some(label) = label else {
         return;
@@ -331,6 +336,12 @@ pub fn show_recording_overlay(app_handle: &AppHandle) {
         return;
     }
 
+    // macOS: panel is OS-visible from app startup (see create_recording_overlay)
+    // and React owns visibility via CSS opacity. Calling .show() and refocusing
+    // here would re-assert panel ordering through `[NSWindow makeKeyAndOrderFront:]`,
+    // which activates the whole Votype app and pulls every visible Votype window
+    // (e.g. the settings window) above the user's foreground app.
+    #[cfg(not(target_os = "macos"))]
     let refocus_target = focused_votype_window_label(app_handle);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -341,6 +352,7 @@ pub fn show_recording_overlay(app_handle: &AppHandle) {
         }
 
         let _ = overlay_window.set_ignore_cursor_events(true);
+        #[cfg(not(target_os = "macos"))]
         let _ = overlay_window.show();
 
         // On Windows, aggressively re-assert "topmost" in the native Z-order after showing
@@ -348,6 +360,7 @@ pub fn show_recording_overlay(app_handle: &AppHandle) {
         force_overlay_topmost(&overlay_window);
 
         emit_overlay_state_with_retry(overlay_window, "recording");
+        #[cfg(not(target_os = "macos"))]
         restore_votype_focus_after_overlay_show(app_handle, refocus_target);
     }
 }
@@ -364,6 +377,8 @@ pub fn show_recording_overlay_rewrite(app_handle: &AppHandle, rewrite_count: u32
         return;
     }
 
+    // macOS: see comment in show_recording_overlay above.
+    #[cfg(not(target_os = "macos"))]
     let refocus_target = focused_votype_window_label(app_handle);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -373,12 +388,14 @@ pub fn show_recording_overlay_rewrite(app_handle: &AppHandle, rewrite_count: u32
         }
 
         let _ = overlay_window.set_ignore_cursor_events(true);
+        #[cfg(not(target_os = "macos"))]
         let _ = overlay_window.show();
 
         #[cfg(target_os = "windows")]
         force_overlay_topmost(&overlay_window);
 
         emit_overlay_state_with_count_and_retry(overlay_window, "recording", rewrite_count);
+        #[cfg(not(target_os = "macos"))]
         restore_votype_focus_after_overlay_show(app_handle, refocus_target);
     }
 }
@@ -391,6 +408,8 @@ pub fn show_transcribing_overlay(app_handle: &AppHandle) {
         return;
     }
 
+    // macOS: see comment in show_recording_overlay above.
+    #[cfg(not(target_os = "macos"))]
     let refocus_target = focused_votype_window_label(app_handle);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -400,6 +419,7 @@ pub fn show_transcribing_overlay(app_handle: &AppHandle) {
         }
 
         let _ = overlay_window.set_ignore_cursor_events(true);
+        #[cfg(not(target_os = "macos"))]
         let _ = overlay_window.show();
 
         // On Windows, aggressively re-assert "topmost" in the native Z-order after showing
@@ -407,6 +427,7 @@ pub fn show_transcribing_overlay(app_handle: &AppHandle) {
         force_overlay_topmost(&overlay_window);
 
         emit_overlay_state_with_retry(overlay_window, "transcribing");
+        #[cfg(not(target_os = "macos"))]
         restore_votype_focus_after_overlay_show(app_handle, refocus_target);
     }
 }
@@ -418,6 +439,8 @@ pub fn show_llm_processing_overlay(app_handle: &AppHandle) {
         return;
     }
 
+    // macOS: see comment in show_recording_overlay above.
+    #[cfg(not(target_os = "macos"))]
     let refocus_target = focused_votype_window_label(app_handle);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -427,8 +450,10 @@ pub fn show_llm_processing_overlay(app_handle: &AppHandle) {
         }
 
         let _ = overlay_window.set_ignore_cursor_events(true);
+        #[cfg(not(target_os = "macos"))]
         let _ = overlay_window.show();
         emit_overlay_state_with_retry(overlay_window, "llm");
+        #[cfg(not(target_os = "macos"))]
         restore_votype_focus_after_overlay_show(app_handle, refocus_target);
     }
 }
@@ -456,6 +481,8 @@ pub fn show_translation_overlay_fast(app_handle: &AppHandle, target_app_name: Op
             update_overlay_position(app_handle);
         }
         let _ = overlay_window.set_ignore_cursor_events(true);
+        // macOS: see comment in show_recording_overlay above.
+        #[cfg(not(target_os = "macos"))]
         let _ = overlay_window.show();
         emit_overlay_state_with_retry(overlay_window, "translation");
     }
@@ -469,6 +496,8 @@ pub fn show_translation_overlay(app_handle: &AppHandle) {
         return;
     }
 
+    // macOS: see comment in show_recording_overlay above.
+    #[cfg(not(target_os = "macos"))]
     let refocus_target = focused_votype_window_label(app_handle);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -477,8 +506,10 @@ pub fn show_translation_overlay(app_handle: &AppHandle) {
         }
 
         let _ = overlay_window.set_ignore_cursor_events(true);
+        #[cfg(not(target_os = "macos"))]
         let _ = overlay_window.show();
         emit_overlay_state_with_retry(overlay_window, "translation");
+        #[cfg(not(target_os = "macos"))]
         restore_votype_focus_after_overlay_show(app_handle, refocus_target);
     }
 }
@@ -506,6 +537,8 @@ pub fn show_success_overlay(
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         if !overlay_window.is_visible().unwrap_or(false) {
             update_overlay_position(app_handle);
+            // macOS: see comment in show_recording_overlay above.
+            #[cfg(not(target_os = "macos"))]
             let _ = overlay_window.show();
         }
         let _ = overlay_window.set_ignore_cursor_events(true);
@@ -522,6 +555,8 @@ pub fn show_inserting_overlay(app_handle: &AppHandle) {
         return;
     }
 
+    // macOS: see comment in show_recording_overlay above.
+    #[cfg(not(target_os = "macos"))]
     let refocus_target = focused_votype_window_label(app_handle);
 
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -530,8 +565,10 @@ pub fn show_inserting_overlay(app_handle: &AppHandle) {
         }
 
         let _ = overlay_window.set_ignore_cursor_events(true);
+        #[cfg(not(target_os = "macos"))]
         let _ = overlay_window.show();
         emit_overlay_state_with_retry(overlay_window, "inserting");
+        #[cfg(not(target_os = "macos"))]
         restore_votype_focus_after_overlay_show(app_handle, refocus_target);
     }
 }

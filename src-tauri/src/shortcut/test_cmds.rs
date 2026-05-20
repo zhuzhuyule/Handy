@@ -19,8 +19,6 @@ type TestExtras = (
 ///   `is_thinking_model` flag and identifying fields. User-supplied keys win
 ///   on collision (e.g. a user `thinking: {type: "disabled"}` overrides an
 ///   auto-injected `thinking: {type: "enabled"}`).
-// TODO(task-2): remove `#[allow(dead_code)]` once `test_post_process_model_inference` wires this helper in.
-#[allow(dead_code)]
 fn resolve_test_extras(
     cached_models: &[crate::settings::CachedModel],
     cached_model_id: Option<&str>,
@@ -62,6 +60,8 @@ pub async fn test_post_process_model_inference(
     model_id: String,
     provider_id: String,
     cached_model_id: Option<String>,
+    extra_params_override: Option<std::collections::HashMap<String, serde_json::Value>>,
+    extra_headers_override: Option<std::collections::HashMap<String, String>>,
 ) -> Result<crate::llm_client::InferenceResult, String> {
     let settings = settings::get_settings(&app);
     let provider = settings
@@ -70,32 +70,13 @@ pub async fn test_post_process_model_inference(
         .find(|p| p.id == provider_id)
         .ok_or("Provider not found")?;
 
-    // Look up CachedModel to get extra_params
-    let cached_model = cached_model_id
-        .as_ref()
-        .and_then(|id| settings.cached_models.iter().find(|m| &m.id == id));
-    let extra_params = cached_model.and_then(|m| m.extra_params.as_ref());
-    let extra_headers = cached_model.and_then(|m| m.extra_headers.as_ref());
+    let (merged_extra_params, extra_headers) = resolve_test_extras(
+        &settings.cached_models,
+        cached_model_id.as_deref(),
+        extra_params_override,
+        extra_headers_override,
+    );
 
-    // Auto-inject thinking params based on is_thinking_model flag
-    let thinking_params = cached_model.and_then(|cm| {
-        crate::settings::thinking_extra_params_with_aliases(
-            &cm.model_id,
-            &cm.provider_id,
-            cm.is_thinking_model,
-            &[cm.custom_label.as_deref().unwrap_or("")],
-        )
-    });
-    let merged_extra_params: Option<std::collections::HashMap<String, serde_json::Value>> =
-        match (thinking_params, extra_params.cloned()) {
-            (Some(mut tp), Some(up)) => {
-                tp.extend(up);
-                Some(tp)
-            }
-            (Some(tp), None) => Some(tp),
-            (None, Some(up)) => Some(up),
-            (None, None) => None,
-        };
     let effective_proxy = crate::settings::resolve_proxy(&settings, provider);
     let max_attempts = settings
         .post_process_api_keys
@@ -124,7 +105,7 @@ pub async fn test_post_process_model_inference(
             let model_id = model_id.clone();
             let prompt = "你是啥模型？".to_string();
             let merged_extra_params = merged_extra_params.clone();
-            let extra_headers = extra_headers.cloned();
+            let extra_headers = extra_headers.clone();
             let effective_proxy = effective_proxy.clone();
 
             move |api_key| {
@@ -356,6 +337,23 @@ mod tests {
         assert_eq!(
             p.get("thinking"),
             Some(&serde_json::json!({ "type": "disabled" })),
+        );
+    }
+
+    #[test]
+    fn override_some_with_cached_model_id_still_ignores_cached() {
+        // Both an override AND a cached_model_id are provided — override wins.
+        let models = vec![make_cached_model("m1", true)];
+        let mut params_override = HashMap::new();
+        params_override.insert("top_p".to_string(), serde_json::json!(0.9));
+
+        let (params, _) =
+            resolve_test_extras(&models, Some("m1"), Some(params_override.clone()), None);
+        let p = params.unwrap();
+        assert!(p.contains_key("top_p"), "override-only key must be present");
+        assert!(
+            !p.contains_key("temperature"),
+            "cached extra_params must NOT leak in when override is provided"
         );
     }
 

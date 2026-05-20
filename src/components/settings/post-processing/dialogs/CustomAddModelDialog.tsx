@@ -14,7 +14,7 @@ import React, { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useSettings } from "../../../../hooks/useSettings";
-import type { ModelType } from "../../../../lib/types";
+import type { CachedModel, ModelType } from "../../../../lib/types";
 import {
   KeyValueEditor,
   type KeyValueEditorHandle,
@@ -47,7 +47,7 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
   testInferenceInline,
 }) => {
   const { t } = useTranslation();
-  const { settings } = useSettings();
+  const { settings, addCachedModel } = useSettings();
 
   const [modelId, setModelId] = useState("");
   const [modelType, setModelType] = useState<ModelType>("text");
@@ -72,6 +72,8 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
     | { kind: "failed"; error: string };
 
   const [testState, setTestState] = useState<TestState>({ kind: "idle" });
+  const [skipped, setSkipped] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   const tokensPerSec = (() => {
     if (testState.kind !== "passed") return null;
@@ -93,6 +95,7 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
   const handleTest = async () => {
     const id = modelId.trim();
     if (!id) return;
+    setSkipped(false);
     setTestState({ kind: "testing" });
     const result = await testInferenceInline(
       id,
@@ -128,8 +131,62 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
     setExtraParams({});
     setExtraHeaders({});
     setTestState({ kind: "idle" });
+    setSkipped(false);
+    setAdding(false);
     onOpenChange(false);
   };
+
+  const buildCacheId = () => {
+    if (globalThis.crypto?.randomUUID) {
+      return globalThis.crypto.randomUUID();
+    }
+    return `${providerId}-${modelId.trim()}-${Date.now()}`;
+  };
+
+  const handleAdd = async () => {
+    const id = modelId.trim();
+    if (!id) return;
+    setAdding(true);
+    try {
+      const headersOut: Record<string, string> = {};
+      for (const [k, v] of Object.entries(extraHeaders)) {
+        headersOut[k] = typeof v === "string" ? v : JSON.stringify(v);
+      }
+      const newModel: CachedModel = {
+        id: buildCacheId(),
+        name: label.trim() || id,
+        model_type: modelType,
+        provider_id: providerId,
+        model_id: id,
+        added_at: new Date().toISOString(),
+        is_thinking_model: false,
+        prompt_message_role: "system",
+        extra_params:
+          Object.keys(extraParams).length > 0 ? extraParams : undefined,
+        extra_headers:
+          Object.keys(headersOut).length > 0 ? headersOut : undefined,
+      };
+      await addCachedModel(newModel);
+      handleClose();
+    } catch (e) {
+      setTestState({
+        kind: "failed",
+        error: `添加失败: ${typeof e === "string" ? e : JSON.stringify(e)}`,
+      });
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const canAdd =
+    modelId.trim().length > 0 &&
+    (testState.kind === "passed" || skipped) &&
+    !adding;
+
+  const showSkipLink =
+    modelId.trim().length > 0 &&
+    !skipped &&
+    (testState.kind === "idle" || testState.kind === "failed");
 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && handleClose()}>
@@ -365,9 +422,22 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
             )}
           </Flex>
 
-          <Flex justify="end" gap="3" mt="2">
+          <Flex justify="end" align="center" gap="3" mt="2">
+            {showSkipLink && (
+              <Button
+                variant="ghost"
+                color="gray"
+                size="1"
+                onClick={() => setSkipped(true)}
+              >
+                跳过测试直接添加
+              </Button>
+            )}
             <Button variant="soft" color="gray" onClick={handleClose}>
               {t("common.cancel")}
+            </Button>
+            <Button variant="solid" onClick={handleAdd} disabled={!canAdd}>
+              {t("common.add")}
             </Button>
           </Flex>
         </Flex>

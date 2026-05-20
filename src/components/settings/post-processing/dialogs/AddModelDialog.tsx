@@ -10,9 +10,15 @@ import {
   SegmentedControl,
   Text,
   TextField,
+  Tooltip,
 } from "@radix-ui/themes";
 import { invoke } from "@tauri-apps/api/core";
-import { IconActivity, IconFlame, IconSearch } from "@tabler/icons-react";
+import {
+  IconActivity,
+  IconFlame,
+  IconPlus,
+  IconSearch,
+} from "@tabler/icons-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -26,6 +32,7 @@ import { inferModelType } from "../../../../lib/modelTypeUtils";
 import type { CachedModel } from "../../../../lib/types";
 import type { PostProcessProviderState } from "../../PostProcessingSettingsApi/usePostProcessProviderState";
 import { PROVIDER_TEMPLATES } from "../providerTemplates";
+import { CustomAddModelDialog } from "./CustomAddModelDialog";
 
 function resolveTemplateMeta(providerId: string) {
   return PROVIDER_TEMPLATES.find((t) => t.id === providerId) ?? null;
@@ -116,6 +123,7 @@ export const AddModelDialog: React.FC<AddModelDialogProps> = ({
   const [freeModels, setFreeModels] = useState<FreeModel[]>([]);
   const [freeLoading, setFreeLoading] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [customAddOpen, setCustomAddOpen] = useState(false);
 
   const templateMeta = resolveTemplateMeta(providerState.selectedProviderId);
   const freeModelProviderKey = templateMeta?.freeModelProvider ?? null;
@@ -302,6 +310,18 @@ export const AddModelDialog: React.FC<AddModelDialogProps> = ({
               </TextField.Root>
             </Box>
 
+            <Tooltip content="添加自定义模型 ID">
+              <Button
+                size="1"
+                variant="soft"
+                color="gray"
+                onClick={() => setCustomAddOpen(true)}
+              >
+                <IconPlus size={14} />
+                自定义
+              </Button>
+            </Tooltip>
+
             {selectedIds.size > 0 && (
               <Badge variant="solid" size="1">
                 {selectedIds.size}
@@ -455,6 +475,12 @@ export const AddModelDialog: React.FC<AddModelDialogProps> = ({
           </Flex>
         </Flex>
       </Dialog.Content>
+      <CustomAddModelDialog
+        open={customAddOpen}
+        onOpenChange={setCustomAddOpen}
+        providerId={providerState.selectedProviderId}
+        testInferenceInline={providerState.testInferenceInline}
+      />
     </Dialog.Root>
   );
 };

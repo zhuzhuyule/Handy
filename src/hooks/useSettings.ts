@@ -88,7 +88,16 @@ interface UseSettingsReturn {
   testPostProcessInference: (
     providerId: string,
     modelId: string,
-  ) => Promise<{ content?: string; reasoning_content?: string }>;
+    overrides?: {
+      extraParams?: Record<string, unknown> | null;
+      extraHeaders?: Record<string, string> | null;
+    },
+  ) => Promise<{
+    content?: string;
+    reasoning_content?: string;
+    duration_ms?: number;
+    total_tokens?: number;
+  }>;
   updateModelChain: (field: string, chain: ModelChain | null) => Promise<void>;
   getPostProcessApiKeys: (providerId: string) => Promise<KeyEntry[]>;
   setPostProcessApiKeys: (

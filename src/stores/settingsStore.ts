@@ -61,7 +61,16 @@ interface SettingsStore {
   testPostProcessInference: (
     providerId: string,
     modelId: string,
-  ) => Promise<{ content?: string; reasoning_content?: string }>;
+    overrides?: {
+      extraParams?: Record<string, unknown> | null;
+      extraHeaders?: Record<string, string> | null;
+    },
+  ) => Promise<{
+    content?: string;
+    reasoning_content?: string;
+    duration_ms?: number;
+    total_tokens?: number;
+  }>;
   setPostProcessModelOptions: (
     providerId: string,
     models: FetchedModel[],
@@ -801,7 +810,14 @@ export const useSettingsStore = create<SettingsStore>()(
       }
     },
 
-    testPostProcessInference: async (providerId: string, modelId: string) => {
+    testPostProcessInference: async (
+      providerId: string,
+      modelId: string,
+      overrides?: {
+        extraParams?: Record<string, unknown> | null;
+        extraHeaders?: Record<string, string> | null;
+      },
+    ) => {
       const updateKey = `test_post_process_inference:${providerId}`;
       const { setUpdating } = get();
       setUpdating(updateKey, true);
@@ -809,7 +825,14 @@ export const useSettingsStore = create<SettingsStore>()(
         const result = (await invoke("test_post_process_model_inference", {
           providerId,
           modelId,
-        })) as { content?: string; reasoning_content?: string };
+          extraParamsOverride: overrides?.extraParams ?? null,
+          extraHeadersOverride: overrides?.extraHeaders ?? null,
+        })) as {
+          content?: string;
+          reasoning_content?: string;
+          duration_ms?: number;
+          total_tokens?: number;
+        };
         return result;
       } catch (error) {
         console.error("Failed to test post-process inference:", error);

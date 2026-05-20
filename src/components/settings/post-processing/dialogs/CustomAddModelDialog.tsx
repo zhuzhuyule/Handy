@@ -222,7 +222,16 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
             </Text>
             <TextField.Root
               value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
+              onChange={(e) => {
+                setModelId(e.target.value);
+                if (skipped) setSkipped(false);
+                if (
+                  testState.kind === "passed" ||
+                  testState.kind === "failed"
+                ) {
+                  setTestState({ kind: "idle" });
+                }
+              }}
               placeholder="e.g. gpt-4o, my-custom-llama"
               autoFocus
             />

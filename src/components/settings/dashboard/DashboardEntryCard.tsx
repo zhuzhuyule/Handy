@@ -12,6 +12,7 @@ import {
   IconMicrophone,
   IconPencil,
   IconPlayerPlay,
+  IconSend,
   IconStar,
   IconThumbDown,
   IconTrash,
@@ -20,6 +21,8 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
+import { useQuickInsertTarget } from "../../../hooks/useQuickInsertTarget";
 import { useSettings } from "../../../hooks/useSettings";
 import { AppIcon } from "../../shared/AppIcon";
 import { DynamicIcon } from "../../shared/IconPicker";
@@ -60,6 +63,26 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
   }) => {
     const { t } = useTranslation();
     const { settings } = useSettings();
+    const quickInsertTarget = useQuickInsertTarget();
+
+    const handleQuickInsert = useCallback(
+      async (text: string) => {
+        try {
+          await invoke("quick_insert_to_target", { text });
+        } catch (err) {
+          const msg = typeof err === "string" ? err : String(err);
+          if (msg.startsWith("focus_failed")) {
+            toast.error(t("dashboard.actions.quickInsertErrorFocus"));
+          } else if (msg.startsWith("paste_failed")) {
+            toast.error(t("dashboard.actions.quickInsertErrorPaste"));
+          } else {
+            toast.error(t("dashboard.actions.quickInsertErrorNoTarget"));
+          }
+        }
+      },
+      [t],
+    );
+
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [audioMissing, setAudioMissing] = useState(false);
     const [isLoadingAudio, setIsLoadingAudio] = useState(false);
@@ -593,18 +616,41 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
                     {entry.streaming_text}
                   </Text>
                 </Tabs.Content>
-                {/* Unified Edit Button for Tabs */}
+                {/* Quick Insert + Edit Buttons for Tabs */}
                 <Box className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-all z-20">
-                  <Tooltip content={t("dashboard.actions.edit")}>
-                    <IconButton
-                      variant="ghost"
-                      size="1"
-                      onClick={handleGlobalEdit}
-                      className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer"
+                  <Flex gap="1">
+                    <Tooltip
+                      content={
+                        quickInsertTarget
+                          ? t("dashboard.actions.quickInsert", {
+                              app: quickInsertTarget.app_name,
+                            })
+                          : t("dashboard.actions.quickInsertEmpty")
+                      }
                     >
-                      <IconPencil size={14} />
-                    </IconButton>
-                  </Tooltip>
+                      <IconButton
+                        variant="ghost"
+                        size="1"
+                        disabled={!quickInsertTarget}
+                        onClick={() =>
+                          handleQuickInsert(entry.transcription_text)
+                        }
+                        className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer"
+                      >
+                        <IconSend size={14} />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip content={t("dashboard.actions.edit")}>
+                      <IconButton
+                        variant="ghost"
+                        size="1"
+                        onClick={handleGlobalEdit}
+                        className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer"
+                      >
+                        <IconPencil size={14} />
+                      </IconButton>
+                    </Tooltip>
+                  </Flex>
                 </Box>
               </Box>
             </Tabs.Root>
@@ -621,21 +667,44 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
               )}
               {!isCancelled && (
                 <Box className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-all z-20">
-                  <Tooltip content={t("dashboard.actions.edit")}>
-                    <IconButton
-                      variant="ghost"
-                      size="1"
-                      onClick={() =>
-                        openEditDialog(
-                          "transcription_text",
-                          entry.transcription_text,
-                        )
+                  <Flex gap="1">
+                    <Tooltip
+                      content={
+                        quickInsertTarget
+                          ? t("dashboard.actions.quickInsert", {
+                              app: quickInsertTarget.app_name,
+                            })
+                          : t("dashboard.actions.quickInsertEmpty")
                       }
-                      className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer"
                     >
-                      <IconPencil size={14} />
-                    </IconButton>
-                  </Tooltip>
+                      <IconButton
+                        variant="ghost"
+                        size="1"
+                        disabled={!quickInsertTarget}
+                        onClick={() =>
+                          handleQuickInsert(entry.transcription_text)
+                        }
+                        className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer"
+                      >
+                        <IconSend size={14} />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip content={t("dashboard.actions.edit")}>
+                      <IconButton
+                        variant="ghost"
+                        size="1"
+                        onClick={() =>
+                          openEditDialog(
+                            "transcription_text",
+                            entry.transcription_text,
+                          )
+                        }
+                        className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer"
+                      >
+                        <IconPencil size={14} />
+                      </IconButton>
+                    </Tooltip>
+                  </Flex>
                 </Box>
               )}
             </Box>

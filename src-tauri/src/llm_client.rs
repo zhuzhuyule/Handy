@@ -1,37 +1,8 @@
 use crate::settings::PostProcessProvider;
-use async_openai::{config::OpenAIConfig, Client};
 use log::{debug, info, warn};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-
-/// Create an OpenAI-compatible client configured for the given provider (async_openai version)
-pub fn create_client(
-    provider: &PostProcessProvider,
-    api_key: String,
-    proxy_url: Option<&str>,
-) -> Result<Client<OpenAIConfig>, String> {
-    let base_url = provider.base_url.trim_end_matches('/');
-    let config = OpenAIConfig::new()
-        .with_api_base(base_url)
-        .with_api_key(api_key);
-
-    // Create client with custom timeout and headers
-    let mut headers = HeaderMap::new();
-    if provider.id == "anthropic" {
-        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-    }
-
-    let http_client = crate::http_client::build_http_client(
-        proxy_url,
-        std::time::Duration::from_secs(30),
-        headers,
-    )?;
-
-    let client = Client::with_config(config).with_http_client(http_client);
-
-    Ok(client)
-}
 
 /// Fetch available models from an OpenAI-compatible API
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
@@ -62,30 +33,28 @@ pub async fn fetch_models(
 
     debug!("[FetchModels] {} (provider={})", url, provider.id);
 
+    // Headers that must be on this request specifically (not shared across
+    // providers). anthropic-version is required for Anthropic, ignored otherwise.
     let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    if !api_key.is_empty() {
-        if provider.id == "anthropic" {
-            headers.insert(
-                "x-api-key",
-                HeaderValue::from_str(&api_key).map_err(|e| e.to_string())?,
-            );
-            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-        } else {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", api_key)).map_err(|e| e.to_string())?,
-            );
-        }
+    if provider.id == "anthropic" {
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     }
 
-    let client = crate::http_client::build_http_client(
-        proxy_url,
-        std::time::Duration::from_secs(30),
-        headers,
-    )?;
+    let client = crate::http_client::get_shared_client(proxy_url)?;
 
-    let response = client.get(&url).send().await.map_err(|e| {
+    let mut req = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .headers(headers);
+    if !api_key.is_empty() {
+        req = if provider.id == "anthropic" {
+            req.header("x-api-key", &api_key)
+        } else {
+            req.bearer_auth(&api_key)
+        };
+    }
+
+    let response = req.send().await.map_err(|e| {
         warn!("[FetchModels] Request failed: {}", e);
         format!("Failed to fetch models: {}", e)
     })?;
@@ -234,21 +203,11 @@ pub async fn send_chat_completion_with_params(
 
     info!("[TestInference] >>> {} model={}", url, model);
 
+    // Headers that go on this request (not the shared client). Authorization is
+    // applied via RequestBuilder below so the shared client can be reused.
     let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    if !api_key.is_empty() {
-        if provider.id == "anthropic" {
-            headers.insert(
-                "x-api-key",
-                HeaderValue::from_str(&api_key).map_err(|e| e.to_string())?,
-            );
-            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-        } else {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", api_key)).map_err(|e| e.to_string())?,
-            );
-        }
+    if provider.id == "anthropic" {
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     }
     // Apply provider-level custom headers
     if let Some(custom) = &provider.custom_headers {
@@ -287,11 +246,7 @@ pub async fn send_chat_completion_with_params(
     });
     let timeout_secs = if is_thinking { 120 } else { 30 };
 
-    let client = crate::http_client::build_http_client(
-        proxy_url,
-        std::time::Duration::from_secs(timeout_secs),
-        headers,
-    )?;
+    let client = crate::http_client::get_shared_client(proxy_url)?;
 
     let mut body = serde_json::json!({
         "model": model,
@@ -317,7 +272,19 @@ pub async fn send_chat_completion_with_params(
 
     let request_start = std::time::Instant::now();
 
-    let response = client.post(&url).json(&body).send().await.map_err(|e| {
+    let mut req = client
+        .post(&url)
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .headers(headers);
+    if !api_key.is_empty() {
+        req = if provider.id == "anthropic" {
+            req.header("x-api-key", &api_key)
+        } else {
+            req.bearer_auth(&api_key)
+        };
+    }
+
+    let response = req.json(&body).send().await.map_err(|e| {
         warn!("[TestInference] Request failed: {}", e);
         format!("HTTP request failed: {}", e)
     })?;

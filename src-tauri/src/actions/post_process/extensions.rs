@@ -798,15 +798,12 @@ async fn execute_single_model_post_process(
         }
     }
 
-    // Manual HTTP request (supports extra_params and longer timeout for thinking models)
+    // Manual HTTP request (supports extra_params and longer timeout for thinking models).
+    // Content-Type lives on the shared client; everything else goes per-request.
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
     let mut base_headers = reqwest::header::HeaderMap::new();
-    base_headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/json"),
-    );
     if provider.id == "anthropic" {
         base_headers.insert(
             "anthropic-version",
@@ -873,20 +870,13 @@ async fn execute_single_model_post_process(
                 let item_id = item_id.clone();
                 let url = url.clone();
                 let body = body.clone();
-                let mut headers = base_headers.clone();
+                let headers = base_headers.clone();
                 let effective_proxy = effective_proxy.clone();
+                let provider_base = provider.base_url.trim_end_matches('/').to_string();
 
                 async move {
-                    headers.insert(
-                        reqwest::header::AUTHORIZATION,
-                        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-                            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")),
-                    );
-
-                    let http_client = match crate::http_client::build_http_client(
+                    let http_client = match crate::http_client::get_shared_client(
                         effective_proxy.as_deref(),
-                        std::time::Duration::from_secs(timeout_secs),
-                        headers,
                     ) {
                         Ok(client) => client,
                         Err(e) => {
@@ -900,17 +890,57 @@ async fn execute_single_model_post_process(
                         }
                     };
 
-                    let resp = match http_client.post(&url).json(&body).send().await {
-                        Ok(resp) => resp,
-                        Err(e) => {
-                            let detail = format!("LLM request failed: {:?}", e);
-                            error!("[MultiModel] {}", detail);
-                            return Err(crate::provider_gateway::AttemptError::Retryable {
-                                status: None,
-                                detail,
-                                kind: crate::provider_gateway::AttemptErrorKind::Network,
-                            });
+                    let mut waf_warmup_done = false;
+                    let resp = loop {
+                        // Per-request: Authorization + provider/model headers + timeout.
+                        let mut req = http_client
+                            .post(&url)
+                            .timeout(std::time::Duration::from_secs(timeout_secs))
+                            .headers(headers.clone());
+                        req = if provider.id == "anthropic" {
+                            req.header("x-api-key", &api_key)
+                        } else {
+                            req.bearer_auth(&api_key)
+                        };
+                        let candidate = match req.json(&body).send().await {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                let detail = format!("LLM request failed: {:?}", e);
+                                error!("[MultiModel] {}", detail);
+                                return Err(crate::provider_gateway::AttemptError::Retryable {
+                                    status: None,
+                                    detail,
+                                    kind: crate::provider_gateway::AttemptErrorKind::Network,
+                                });
+                            }
+                        };
+
+                        // WAF cookie challenge: 403/405/406 + empty body → warm up via GET /models.
+                        if !waf_warmup_done {
+                            let status_u16 = candidate.status().as_u16();
+                            if matches!(status_u16, 403 | 405 | 406) {
+                                let content_len = candidate
+                                    .content_length()
+                                    .unwrap_or(0);
+                                if content_len == 0 {
+                                    waf_warmup_done = true;
+                                    let warmup_url = format!("{}/models", provider_base);
+                                    log::warn!(
+                                        "[MultiModel] WAF cookie challenge (status={}) for provider='{}' — warming up via GET {}",
+                                        status_u16, provider.id, warmup_url
+                                    );
+                                    let _ = http_client
+                                        .get(&warmup_url)
+                                        .timeout(std::time::Duration::from_secs(10))
+                                        .send()
+                                        .await;
+                                    // discard candidate, retry POST
+                                    drop(candidate);
+                                    continue;
+                                }
+                            }
                         }
+                        break candidate;
                     };
 
                     if !resp.status().is_success() {

@@ -384,7 +384,18 @@ pub(crate) fn classify_http_status_for_failover(
 ) -> crate::provider_gateway::AttemptError {
     let detail = detail.into();
     match status {
-        429 => crate::provider_gateway::AttemptError::Retryable {
+        // 429: rate limit. 408: request timeout. 425: too early.
+        // 5xx: server-side errors.
+        // 403/405/406: typical WAF cold-start codes (e.g. 百度云 BDWAF in front
+        // of Gitee AI). Inside a single attempt we already self-heal these via a
+        // GET warmup; if it still fails, failover to another key may succeed
+        // (some WAFs key trust on api_key as well).
+        408 | 425 | 429 => crate::provider_gateway::AttemptError::Retryable {
+            status: Some(status),
+            detail,
+            kind: crate::provider_gateway::AttemptErrorKind::Http,
+        },
+        403 | 405 | 406 => crate::provider_gateway::AttemptError::Retryable {
             status: Some(status),
             detail,
             kind: crate::provider_gateway::AttemptErrorKind::Http,
@@ -633,41 +644,33 @@ mod tests {
 
     #[test]
     fn classify_http_status_for_failover_marks_retryable_and_fatal_statuses() {
-        assert!(matches!(
-            classify_http_status_for_failover(429, "rate limit"),
-            AttemptError::Retryable {
-                status: Some(429),
-                kind: AttemptErrorKind::Http,
-                ..
-            }
-        ));
+        for status in [408u16, 425, 429, 403, 405, 406, 500, 502, 503, 504] {
+            assert!(
+                matches!(
+                    classify_http_status_for_failover(status, "retryable"),
+                    AttemptError::Retryable {
+                        kind: AttemptErrorKind::Http,
+                        ..
+                    }
+                ),
+                "expected status {} to be retryable",
+                status
+            );
+        }
 
-        assert!(matches!(
-            classify_http_status_for_failover(503, "server unavailable"),
-            AttemptError::Retryable {
-                status: Some(503),
-                kind: AttemptErrorKind::Http,
-                ..
-            }
-        ));
-
-        assert!(matches!(
-            classify_http_status_for_failover(400, "bad request"),
-            AttemptError::Fatal {
-                status: Some(400),
-                kind: AttemptErrorKind::Http,
-                ..
-            }
-        ));
-
-        assert!(matches!(
-            classify_http_status_for_failover(401, "unauthorized"),
-            AttemptError::Fatal {
-                status: Some(401),
-                kind: AttemptErrorKind::Http,
-                ..
-            }
-        ));
+        for status in [400u16, 401, 404, 410] {
+            assert!(
+                matches!(
+                    classify_http_status_for_failover(status, "fatal"),
+                    AttemptError::Fatal {
+                        kind: AttemptErrorKind::Http,
+                        ..
+                    }
+                ),
+                "expected status {} to be fatal",
+                status
+            );
+        }
     }
 
     #[test]
@@ -1024,15 +1027,14 @@ async fn execute_llm_request_inner(
         }
     }
 
-    // Manual HTTP request to allow arbitrary parameters and handle response flexibly
+    // Manual HTTP request to allow arbitrary parameters and handle response flexibly.
+    // The shared client carries cookie_store + Content-Type; everything else goes
+    // per-request on the RequestBuilder so the same client can serve multiple
+    // (api_key, provider, model) combinations.
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
     let mut base_headers = reqwest::header::HeaderMap::new();
-    base_headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/json"),
-    );
 
     if provider.id == "anthropic" {
         base_headers.insert(
@@ -1114,37 +1116,13 @@ async fn execute_llm_request_inner(
                 let model = model.clone();
                 let url = url.clone();
                 let body = body.clone();
-                let mut headers = base_headers.clone();
+                let headers = base_headers.clone();
                 let effective_proxy = effective_proxy.clone();
                 let unsupported_mgr = unsupported_mgr.clone();
 
                 async move {
-                    match crate::llm_client::create_client(
-                        &provider,
-                        api_key.clone(),
+                    let http_client = match crate::http_client::get_shared_client(
                         effective_proxy.as_deref(),
-                    ) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            let error = LlmError::ClientInit {
-                                provider: provider.id.clone(),
-                                model: model.clone(),
-                                detail: format!("{}", e),
-                            };
-                            return Err(llm_error_to_attempt_error(&error));
-                        }
-                    }
-
-                    headers.insert(
-                        reqwest::header::AUTHORIZATION,
-                        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-                            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")),
-                    );
-
-                    let http_client = match crate::http_client::build_http_client(
-                        effective_proxy.as_deref(),
-                        std::time::Duration::from_secs(60),
-                        headers,
                     ) {
                         Ok(client) => client,
                         Err(e) => {
@@ -1157,17 +1135,33 @@ async fn execute_llm_request_inner(
                         }
                     };
 
-                    // Self-heal loop: on HTTP 400 with an extractable "unsupported
-                    // parameter" error, drop that key from the body, record it so
-                    // future requests pre-strip it, and retry once. Bounded at 3
-                    // iterations to avoid pathological back-and-forth.
+                    // Self-heal loop:
+                    //   - on HTTP 400 with an extractable "unsupported parameter" error,
+                    //     drop that key from the body, record it so future requests
+                    //     pre-strip it, and retry. Bounded at 3 iterations.
+                    //   - on HTTP 403/405/406 with empty body (typical WAF signature, e.g.
+                    //     百度云 BDWAF in front of Gitee AI), warm up once with a GET to
+                    //     the provider base. The cookie_store on the shared client keeps
+                    //     the resulting trust cookie (e.g. BEC) for subsequent POSTs.
                     const MAX_SELF_HEAL_ATTEMPTS: u8 = 3;
                     let mut current_body = body;
                     let mut self_heal_attempts: u8 = 0;
+                    let mut waf_warmup_done: bool = false;
+                    let provider_base = provider.base_url.trim_end_matches('/').to_string();
 
                     loop {
-                        let send_res =
-                            http_client.post(&url).json(&current_body).send().await;
+                        // Per-request: Authorization via bearer_auth + provider/model headers + timeout.
+                        // Anthropic uses x-api-key; everyone else uses Bearer.
+                        let mut req = http_client
+                            .post(&url)
+                            .timeout(std::time::Duration::from_secs(60))
+                            .headers(headers.clone());
+                        req = if provider.id == "anthropic" {
+                            req.header("x-api-key", &api_key)
+                        } else {
+                            req.bearer_auth(&api_key)
+                        };
+                        let send_res = req.json(&current_body).send().await;
                         let resp = match send_res {
                             Ok(r) => r,
                             Err(err) => {
@@ -1189,6 +1183,27 @@ async fn execute_llm_request_inner(
 
                         let status_u16 = resp.status().as_u16();
                         let error_text = resp.text().await.unwrap_or_default();
+
+                        // WAF cookie challenge: 403/405/406 with empty body is the
+                        // BDWAF cold-start signature. Hit /models with GET so the
+                        // trust cookie lands in our cookie_store, then retry POST.
+                        if !waf_warmup_done
+                            && matches!(status_u16, 403 | 405 | 406)
+                            && error_text.is_empty()
+                        {
+                            waf_warmup_done = true;
+                            let warmup_url = format!("{}/models", provider_base);
+                            log::warn!(
+                                "[LLM] WAF cookie challenge detected (status={}) for provider='{}' — warming up via GET {}",
+                                status_u16, provider.id, warmup_url
+                            );
+                            let _ = http_client
+                                .get(&warmup_url)
+                                .timeout(std::time::Duration::from_secs(10))
+                                .send()
+                                .await;
+                            continue;
+                        }
 
                         if status_u16 == 400
                             && self_heal_attempts < MAX_SELF_HEAL_ATTEMPTS
@@ -1357,7 +1372,11 @@ async fn execute_llm_request_with_messages_impl(
     override_extra_params: Option<&HashMap<String, serde_json::Value>>,
     emit_overlay: bool,
 ) -> (Option<String>, bool, Option<String>, Option<i64>) {
-    let inner_future = execute_llm_request_inner(
+    // No outer timeout here: per-request HTTP timeout (60s, or 120s for thinking
+    // models in extensions.rs) is the authoritative budget. A short outer timeout
+    // here would race against the inner one and starve thinking models that
+    // legitimately take longer than the outer cap.
+    let result = execute_llm_request_inner(
         app_handle,
         settings,
         provider,
@@ -1371,25 +1390,8 @@ async fn execute_llm_request_with_messages_impl(
         _match_pattern,
         _match_type,
         override_extra_params,
-    );
-
-    let result = match tokio::time::timeout(std::time::Duration::from_secs(10), inner_future).await
-    {
-        Ok(r) => r,
-        Err(_) => {
-            log::warn!(
-                "[LLM] Request timed out (>10s): provider={} model={}",
-                provider.id,
-                model
-            );
-            Err(LlmError::Network {
-                provider: provider.id.clone(),
-                model: model.to_string(),
-                url: String::new(),
-                detail: "LLM request timed out (>10s)".to_string(),
-            })
-        }
-    };
+    )
+    .await;
 
     if let Err(ref e) = result {
         log::error!("LLM request failed: {}", e);

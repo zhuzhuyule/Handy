@@ -943,9 +943,9 @@ async reorderPostProcessProviders(providerIds: string[]) : Promise<Result<null, 
     else return { status: "error", error: e  as any };
 }
 },
-async testPostProcessModelInference(modelId: string, providerId: string, cachedModelId: string | null) : Promise<Result<InferenceResult, string>> {
+async testPostProcessModelInference(modelId: string, providerId: string, cachedModelId: string | null, extraParamsOverride: Partial<{ [key in string]: JsonValue }> | null, extraHeadersOverride: Partial<{ [key in string]: string }> | null) : Promise<Result<InferenceResult, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("test_post_process_model_inference", { modelId, providerId, cachedModelId }) };
+    return { status: "ok", data: await TAURI_INVOKE("test_post_process_model_inference", { modelId, providerId, cachedModelId, extraParamsOverride, extraHeadersOverride }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

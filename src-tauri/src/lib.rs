@@ -11,6 +11,7 @@ mod clipboard;
 mod commands;
 pub mod error;
 pub mod fallback;
+mod foreground_tracker;
 mod helpers;
 pub mod http_client;
 mod input;
@@ -399,6 +400,11 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Create the recording overlay window (hidden by default)
     utils::create_recording_overlay(app_handle);
+
+    // 后台 500ms 轮询，保存最近一次"非 Votype 自身"的 frontmost app。
+    // 详情卡片的 Insert 按钮以此为目标。
+    // 见 docs/specs/2026-05-20-quick-insert-from-history-detail.spec.md
+    foreground_tracker::start(app_handle);
 
     openai_api_server::start_openai_api_server(app_handle);
 

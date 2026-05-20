@@ -24,12 +24,27 @@ interface CustomAddModelDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   providerId: string;
+  testInferenceInline: (
+    modelId: string,
+    extraParams: Record<string, unknown> | null,
+    extraHeaders: Record<string, string> | null,
+  ) => Promise<
+    | {
+        content: string;
+        hasThinking: boolean;
+        durationMs: number | null;
+        totalTokens: number | null;
+        error?: undefined;
+      }
+    | { error: string }
+  >;
 }
 
 export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
   open,
   onOpenChange,
   providerId,
+  testInferenceInline,
 }) => {
   const { t } = useTranslation();
   const { settings } = useSettings();
@@ -43,6 +58,59 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
   const headersEditorRef = useRef<KeyValueEditorHandle>(null);
   const [bodyEntryCount, setBodyEntryCount] = useState(0);
   const [headerEntryCount, setHeaderEntryCount] = useState(0);
+
+  type TestState =
+    | { kind: "idle" }
+    | { kind: "testing" }
+    | {
+        kind: "passed";
+        content: string;
+        hasThinking: boolean;
+        durationMs: number | null;
+        totalTokens: number | null;
+      }
+    | { kind: "failed"; error: string };
+
+  const [testState, setTestState] = useState<TestState>({ kind: "idle" });
+
+  const tokensPerSec = (() => {
+    if (testState.kind !== "passed") return null;
+    const { totalTokens, durationMs } = testState;
+    if (!totalTokens || !durationMs || durationMs <= 0) return null;
+    return (totalTokens / durationMs) * 1000;
+  })();
+
+  const headersAsStringMap = (): Record<string, string> | null => {
+    const entries = Object.entries(extraHeaders);
+    if (entries.length === 0) return null;
+    const out: Record<string, string> = {};
+    for (const [k, v] of entries) {
+      out[k] = typeof v === "string" ? v : JSON.stringify(v);
+    }
+    return out;
+  };
+
+  const handleTest = async () => {
+    const id = modelId.trim();
+    if (!id) return;
+    setTestState({ kind: "testing" });
+    const result = await testInferenceInline(
+      id,
+      Object.keys(extraParams).length > 0 ? extraParams : null,
+      headersAsStringMap(),
+    );
+    if ("error" in result && result.error) {
+      setTestState({ kind: "failed", error: result.error });
+    } else if (!("error" in result)) {
+      setTestState({
+        kind: "passed",
+        content: result.content,
+        hasThinking: result.hasThinking,
+        durationMs: result.durationMs,
+        totalTokens: result.totalTokens,
+      });
+    }
+  };
 
   const cachedModels = settings?.cached_models ?? [];
   const isDuplicate = useMemo(() => {
@@ -59,6 +127,7 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
     setLabel("");
     setExtraParams({});
     setExtraHeaders({});
+    setTestState({ kind: "idle" });
     onOpenChange(false);
   };
 
@@ -233,6 +302,67 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
               addRef={headersEditorRef}
               onEntryCountChange={setHeaderEntryCount}
             />
+          </Flex>
+
+          <Flex direction="column" gap="2">
+            <Flex align="center" gap="2">
+              <Tooltip
+                content={
+                  modelId.trim().length === 0
+                    ? "请先填入模型 ID"
+                    : "发送一句话 ping 测试"
+                }
+              >
+                <Button
+                  variant="soft"
+                  color="blue"
+                  disabled={
+                    modelId.trim().length === 0 || testState.kind === "testing"
+                  }
+                  onClick={handleTest}
+                >
+                  {testState.kind === "testing" ? "测试中…" : "测试"}
+                </Button>
+              </Tooltip>
+            </Flex>
+
+            {testState.kind === "passed" && (
+              <Callout.Root color="green" size="1">
+                <Callout.Icon>
+                  <IconInfoCircle size={14} />
+                </Callout.Icon>
+                <Callout.Text>
+                  <Flex direction="column" gap="1">
+                    <Text size="2">
+                      {testState.content.length > 200
+                        ? testState.content.slice(0, 200) + "…"
+                        : testState.content}
+                    </Text>
+                    <Flex gap="3">
+                      {tokensPerSec !== null && (
+                        <Text size="1" color="gray">
+                          {tokensPerSec.toFixed(1)} t/s
+                        </Text>
+                      )}
+                      {testState.hasThinking && (
+                        <Text size="1" color="blue">
+                          🧠 Thinking
+                        </Text>
+                      )}
+                    </Flex>
+                  </Flex>
+                </Callout.Text>
+              </Callout.Root>
+            )}
+
+            {testState.kind === "failed" && (
+              <Callout.Root color="red" size="1">
+                <Callout.Icon>
+                  <IconInfoCircle size={14} />
+                </Callout.Icon>
+                <Callout.Text>{testState.error}</Callout.Text>
+              </Callout.Root>
+            )}
           </Flex>
 
           <Flex justify="end" gap="3" mt="2">

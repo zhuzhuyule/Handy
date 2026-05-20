@@ -1,13 +1,17 @@
 use crate::active_window::{fetch_active_window, ActiveWindowInfo};
+use log::{debug, info, warn};
 use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
-use tauri::AppHandle;
 
 /// 后台轮询保存的"最近一次非 Votype 自身的 frontmost app"。
 /// `quick_insert_to_target` 命令以此为目标做 focus + paste。
 static LAST_EXTERNAL_FRONTMOST: Lazy<StdMutex<Option<ActiveWindowInfo>>> =
     Lazy::new(|| StdMutex::new(None));
+
+/// 保证 `start()` 只生效一次——重复调用会被忽略，避免双轮询竞争 slot。
+static STARTED: AtomicBool = AtomicBool::new(false);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -45,12 +49,49 @@ pub fn get_last_external_frontmost() -> Option<ActiveWindowInfo> {
 
 /// 启动后台轮询。在 `lib.rs` 的 setup 中调用一次即可——任务永久存活到进程退出。
 /// 取自身 pid 后传入闭包，避免每次循环都 syscall。
-pub fn start(_app_handle: &AppHandle) {
+///
+/// 幂等：重复调用直接返回并打 warn，防止多个 poller 同时写 slot。
+pub fn start() {
+    if STARTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        warn!("[ForegroundTracker] start() called more than once; ignoring duplicate invocation");
+        return;
+    }
+
     let self_pid = std::process::id() as u64;
     tauri::async_runtime::spawn(async move {
+        // 跨循环状态：上一轮 fetch 是否成功，以及 slot 是否曾被写入。
+        // 用于把日志限制在「状态变化」边沿上，避免 Wayland 每 500ms 刷一行 warn。
+        let mut last_poll_ok = true;
+        let mut slot_ever_set = false;
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
-            if let Some(info) = next_slot_value(fetch_active_window(), self_pid) {
+            let fetched = fetch_active_window();
+            let this_poll_ok = fetched.is_ok();
+            if !this_poll_ok && last_poll_ok {
+                if let Err(ref err) = fetched {
+                    warn!(
+                        "[ForegroundTracker] active window fetch started failing: {}",
+                        err
+                    );
+                }
+            }
+            last_poll_ok = this_poll_ok;
+
+            if let Some(info) = next_slot_value(fetched, self_pid) {
+                if !slot_ever_set {
+                    info!(
+                        "[ForegroundTracker] first slot captured: app='{}' pid={}",
+                        info.app_name, info.process_id
+                    );
+                    slot_ever_set = true;
+                }
+                debug!(
+                    "[ForegroundTracker] slot updated to app='{}' pid={}",
+                    info.app_name, info.process_id
+                );
                 set_last_external_frontmost(info);
             }
         }

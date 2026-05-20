@@ -404,7 +404,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // 后台 500ms 轮询，保存最近一次"非 Votype 自身"的 frontmost app。
     // 详情卡片的 Insert 按钮以此为目标。
     // 见 docs/specs/2026-05-20-quick-insert-from-history-detail.spec.md
-    foreground_tracker::start(app_handle);
+    foreground_tracker::start();
 
     openai_api_server::start_openai_api_server(app_handle);
 

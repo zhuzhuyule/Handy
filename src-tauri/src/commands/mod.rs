@@ -229,6 +229,12 @@ pub fn quick_insert_to_target(app: AppHandle, text: String) -> Result<(), String
     let target = crate::foreground_tracker::get_last_external_frontmost()
         .ok_or_else(|| "no_target".to_string())?;
 
+    log::info!(
+        "[QuickInsert] inserting into app='{}' pid={}",
+        target.app_name,
+        target.process_id
+    );
+
     crate::active_window::focus_app_by_pid(target.process_id)
         .map_err(|e| format!("focus_failed: {e}"))?;
 
@@ -237,7 +243,9 @@ pub fn quick_insert_to_target(app: AppHandle, text: String) -> Result<(), String
     crate::clipboard::paste(text, app.clone()).map_err(|e| format!("paste_failed: {e}"))?;
 
     if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
+        if let Err(e) = main.hide() {
+            log::warn!("[QuickInsert] main_window.hide failed (paste already succeeded): {e}");
+        }
     }
 
     Ok(())

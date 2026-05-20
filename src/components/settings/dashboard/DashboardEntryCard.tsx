@@ -628,17 +628,22 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
                           : t("dashboard.actions.quickInsertEmpty")
                       }
                     >
-                      <IconButton
-                        variant="ghost"
-                        size="1"
-                        disabled={!quickInsertTarget}
-                        onClick={() =>
-                          handleQuickInsert(entry.transcription_text)
-                        }
-                        className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer"
-                      >
-                        <IconSend size={14} />
-                      </IconButton>
+                      {/* Span wrapper: native `disabled` blocks pointer events,
+                          so the Tooltip wouldn't show on a disabled IconButton.
+                          The span receives hover and forwards to the Tooltip. */}
+                      <span className="inline-flex">
+                        <IconButton
+                          variant="ghost"
+                          size="1"
+                          disabled={!quickInsertTarget}
+                          onClick={() =>
+                            handleQuickInsert(entry.transcription_text)
+                          }
+                          className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <IconSend size={14} />
+                        </IconButton>
+                      </span>
                     </Tooltip>
                     <Tooltip content={t("dashboard.actions.edit")}>
                       <IconButton
@@ -677,17 +682,20 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
                           : t("dashboard.actions.quickInsertEmpty")
                       }
                     >
-                      <IconButton
-                        variant="ghost"
-                        size="1"
-                        disabled={!quickInsertTarget}
-                        onClick={() =>
-                          handleQuickInsert(entry.transcription_text)
-                        }
-                        className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer"
-                      >
-                        <IconSend size={14} />
-                      </IconButton>
+                      {/* See span-wrapper rationale in the Tabs branch above. */}
+                      <span className="inline-flex">
+                        <IconButton
+                          variant="ghost"
+                          size="1"
+                          disabled={!quickInsertTarget}
+                          onClick={() =>
+                            handleQuickInsert(entry.transcription_text)
+                          }
+                          className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <IconSend size={14} />
+                        </IconButton>
+                      </span>
                     </Tooltip>
                     <Tooltip content={t("dashboard.actions.edit")}>
                       <IconButton

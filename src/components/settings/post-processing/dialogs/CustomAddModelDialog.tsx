@@ -3,16 +3,22 @@ import {
   Callout,
   Dialog,
   Flex,
+  IconButton,
   SegmentedControl,
   Text,
   TextField,
+  Tooltip,
 } from "@radix-ui/themes";
-import { IconInfoCircle } from "@tabler/icons-react";
-import React, { useMemo, useState } from "react";
+import { IconBrain, IconInfoCircle, IconPlus } from "@tabler/icons-react";
+import React, { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useSettings } from "../../../../hooks/useSettings";
 import type { ModelType } from "../../../../lib/types";
+import {
+  KeyValueEditor,
+  type KeyValueEditorHandle,
+} from "../../../ui/KeyValueEditor";
 
 interface CustomAddModelDialogProps {
   open: boolean;
@@ -31,6 +37,12 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
   const [modelId, setModelId] = useState("");
   const [modelType, setModelType] = useState<ModelType>("text");
   const [label, setLabel] = useState("");
+  const [extraParams, setExtraParams] = useState<Record<string, unknown>>({});
+  const [extraHeaders, setExtraHeaders] = useState<Record<string, unknown>>({});
+  const bodyEditorRef = useRef<KeyValueEditorHandle>(null);
+  const headersEditorRef = useRef<KeyValueEditorHandle>(null);
+  const [bodyEntryCount, setBodyEntryCount] = useState(0);
+  const [headerEntryCount, setHeaderEntryCount] = useState(0);
 
   const cachedModels = settings?.cached_models ?? [];
   const isDuplicate = useMemo(() => {
@@ -45,6 +57,8 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
     setModelId("");
     setModelType("text");
     setLabel("");
+    setExtraParams({});
+    setExtraHeaders({});
     onOpenChange(false);
   };
 
@@ -132,6 +146,92 @@ export const CustomAddModelDialog: React.FC<CustomAddModelDialogProps> = ({
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder={modelId || t("common.optional", "Optional")}
+            />
+          </Flex>
+
+          <Flex direction="column" gap="1">
+            <Flex align="center" gap="2" wrap="wrap">
+              <Text size="2" weight="medium" color="gray">
+                Body 参数
+              </Text>
+              {bodyEntryCount > 0 && (
+                <Tooltip content="添加参数">
+                  <IconButton
+                    size="1"
+                    variant="outline"
+                    className="h-5! w-5!"
+                    color="gray"
+                    onClick={() => bodyEditorRef.current?.addEntry()}
+                  >
+                    <IconPlus size={12} />
+                  </IconButton>
+                </Tooltip>
+              )}
+              <Button
+                size="1"
+                variant="soft"
+                color="blue"
+                onClick={() =>
+                  setExtraParams((prev) => ({
+                    ...prev,
+                    thinking: { type: "enabled" },
+                  }))
+                }
+              >
+                <IconBrain size={12} />
+                启用思考
+              </Button>
+              <Button
+                size="1"
+                variant="soft"
+                color="orange"
+                onClick={() =>
+                  setExtraParams((prev) => ({
+                    ...prev,
+                    thinking: { type: "disabled" },
+                  }))
+                }
+              >
+                <IconBrain size={12} />
+                禁用思考
+              </Button>
+            </Flex>
+            <KeyValueEditor
+              value={extraParams}
+              onChange={setExtraParams}
+              addLabel="添加 Body 参数"
+              addTooltip="添加参数"
+              addRef={bodyEditorRef}
+              onEntryCountChange={setBodyEntryCount}
+            />
+          </Flex>
+
+          <Flex direction="column" gap="1">
+            <Flex align="center" gap="2">
+              <Text size="2" weight="medium" color="gray">
+                Headers
+              </Text>
+              {headerEntryCount > 0 && (
+                <Tooltip content="添加 Header">
+                  <IconButton
+                    size="1"
+                    variant="outline"
+                    color="gray"
+                    className="h-5! w-5!"
+                    onClick={() => headersEditorRef.current?.addEntry()}
+                  >
+                    <IconPlus size={12} />
+                  </IconButton>
+                </Tooltip>
+              )}
+            </Flex>
+            <KeyValueEditor
+              value={extraHeaders}
+              onChange={setExtraHeaders}
+              addLabel="添加 Header"
+              addTooltip="添加 Header"
+              addRef={headersEditorRef}
+              onEntryCountChange={setHeaderEntryCount}
             />
           </Flex>
 

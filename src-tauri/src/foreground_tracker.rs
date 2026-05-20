@@ -39,7 +39,6 @@ pub(crate) fn set_last_external_frontmost(info: ActiveWindowInfo) {
 }
 
 /// 命令侧使用：取一份 slot 的克隆，None 表示还没追踪到外部 app（应用刚启动或 Wayland 抓不到）。
-#[allow(dead_code)] // removed in Task 3 when quick_insert_to_target command consumes the slot
 pub fn get_last_external_frontmost() -> Option<ActiveWindowInfo> {
     let slot = LAST_EXTERNAL_FRONTMOST
         .lock()

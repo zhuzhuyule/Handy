@@ -197,6 +197,52 @@ pub fn paste_to_previous_window(app: AppHandle, text: String) -> Result<(), Stri
     crate::clipboard::paste(text, app)
 }
 
+/// 暴露给前端的最小 target 描述。
+/// 前端用 `app_name` 渲染 tooltip；`pid` 仅用于日志/调试，命令端读 backend slot 自己解析。
+#[derive(serde::Serialize)]
+pub struct QuickInsertTarget {
+    pub app_name: String,
+    pub pid: u64,
+}
+
+/// 返回 backend 当前缓存的"最近一次非 Votype frontmost"。前端 Dashboard 详情按钮以此决定 enabled/disabled。
+#[tauri::command]
+pub fn get_quick_insert_target() -> Option<QuickInsertTarget> {
+    crate::foreground_tracker::get_last_external_frontmost().map(|info| QuickInsertTarget {
+        app_name: info.app_name,
+        pid: info.process_id,
+    })
+}
+
+/// 把 `text` 插入到 backend 缓存的目标 app。
+///
+/// 失败时 Err 字符串采用三类前缀，前端按前缀映射 toast：
+/// - `no_target` — slot 空（理论上前端 disabled 已阻止，仅作 defensive）
+/// - `focus_failed: <details>` — focus_app_by_pid 失败，目标 app 可能已关闭
+/// - `paste_failed: <details>` — paste 失败，常因辅助权限缺失
+///
+/// 成功后隐藏 main 窗口；失败时 main 保持打开，前端 toast 显示错误。
+#[tauri::command]
+pub fn quick_insert_to_target(app: AppHandle, text: String) -> Result<(), String> {
+    use std::time::Duration;
+
+    let target = crate::foreground_tracker::get_last_external_frontmost()
+        .ok_or_else(|| "no_target".to_string())?;
+
+    crate::active_window::focus_app_by_pid(target.process_id)
+        .map_err(|e| format!("focus_failed: {e}"))?;
+
+    std::thread::sleep(Duration::from_millis(120));
+
+    crate::clipboard::paste(text, app.clone()).map_err(|e| format!("paste_failed: {e}"))?;
+
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn log_to_console(msg: String, level: Option<String>) {
     // Default to info if no level provided

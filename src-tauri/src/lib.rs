@@ -939,6 +939,8 @@ pub fn run() {
             commands::get_first_history_entry,
             commands::paste_text_to_active_window,
             commands::paste_to_previous_window,
+            commands::get_quick_insert_target,
+            commands::quick_insert_to_target,
             commands::log_to_console,
             commands::focus_overlay,
             commands::confirm_skill,

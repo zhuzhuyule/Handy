@@ -34,6 +34,20 @@ export type PostProcessProviderState = {
   testInference: (
     modelId: string,
   ) => Promise<{ result?: string; error?: string; hasThinking?: boolean }>;
+  testInferenceInline: (
+    modelId: string,
+    extraParams: Record<string, unknown> | null,
+    extraHeaders: Record<string, string> | null,
+  ) => Promise<
+    | {
+        content: string;
+        hasThinking: boolean;
+        durationMs: number | null;
+        totalTokens: number | null;
+        error?: undefined;
+      }
+    | { error: string }
+  >;
   verifiedProviderIds: Set<string>;
   activeProviderId: string;
   activateProvider: (providerId: string) => Promise<void>;
@@ -245,6 +259,54 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
     [testPostProcessInference, viewingProviderId],
   );
 
+  const testInferenceInline = useCallback(
+    async (
+      modelId: string,
+      extraParams: Record<string, unknown> | null,
+      extraHeaders: Record<string, string> | null,
+    ): Promise<
+      | {
+          content: string;
+          hasThinking: boolean;
+          durationMs: number | null;
+          totalTokens: number | null;
+          error?: undefined;
+        }
+      | { error: string }
+    > => {
+      try {
+        const result = await testPostProcessInference(
+          viewingProviderId,
+          modelId,
+          {
+            extraParams,
+            extraHeaders,
+          },
+        );
+        const rawContent = result.content ?? "";
+        const mainContent = rawContent
+          .replace(/<think>[\s\S]*?<\/think>/g, "")
+          .trim();
+        if (!mainContent) {
+          return { error: "Empty response from provider" };
+        }
+        const hasThinking =
+          (typeof result.reasoning_content === "string" &&
+            result.reasoning_content.trim().length > 0) ||
+          /<think>[\s\S]*?<\/think>/.test(rawContent);
+        return {
+          content: mainContent,
+          hasThinking,
+          durationMs: result.duration_ms ?? null,
+          totalTokens: result.total_tokens ?? null,
+        };
+      } catch (e) {
+        return { error: typeof e === "string" ? e : JSON.stringify(e) };
+      }
+    },
+    [testPostProcessInference, viewingProviderId],
+  );
+
   const [lastInferenceResult, setLastInferenceResult] = useState<{
     result?: string;
     hasThinking?: boolean;
@@ -330,6 +392,7 @@ export const usePostProcessProviderState = (): PostProcessProviderState => {
     handleModelsEndpointChange,
     testConnection,
     testInference,
+    testInferenceInline,
     verifiedProviderIds,
     activateProvider: setPostProcessProvider,
     lastInferenceResult,

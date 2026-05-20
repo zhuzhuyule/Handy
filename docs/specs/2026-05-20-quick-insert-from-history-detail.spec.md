@@ -142,8 +142,11 @@ estimate: "1 day"
 
 ## 实施偏差
 
-> 功能完成后填写。
-
-| 原计划 | 实际实现 | 原因 |
-| ------ | -------- | ---- |
-| —      | —        | —    |
+| 原计划                                           | 实际实现                                                                                                                                        | 原因                                                                                                                                            |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Task 1+2 仅引入 slot + tracker + setup wiring    | 同时加了 `log::debug!` / `log::info!` / `log::warn!` 日志（slot 更新、首次捕获、首次 Ok→Err 转换）                                              | spec 场景 1 验收要求"日志中能看到 `[ForegroundTracker]` 行"；原实现无日志，无法验证                                                             |
+| Task 1+2 仅引入 `start()` 后台 task              | 新增 `STARTED: AtomicBool` idempotency guard，并把 `start()` 参数从 `&AppHandle` 降为无参                                                       | code review 指出无防护可能被重复调用 spawn 两个 poller；同时 `_app_handle` 实际未使用                                                           |
+| Task 3 仅添加 2 个 Tauri command                 | 在 `quick_insert_to_target` 内额外加 `log::info!("[QuickInsert] inserting into app=... pid=...")` 与 `main_window.hide()` 失败时的 `log::warn!` | code review 指出便于"插入到错误 app"问题的事后排查；隐藏失败的静默 `let _` 不利于平台异常诊断                                                   |
+| Task 6 仅在 disabled Tooltip 包裹原生 IconButton | 用 `<span className="inline-flex">` 包了一层 IconButton；className 加 `disabled:cursor-not-allowed disabled:opacity-50`                         | 原生 HTML `disabled` 拦截 pointer events，Radix Tooltip 在 disabled 按钮上不会显示；spec UX 决策"显示但置灰 + tooltip 解释"在原始实现下无法兑现 |
+| Spec 未覆盖 slot-eviction race                   | 已知限制：用户阅读 tooltip 时 slot 可能被新外部 frontmost 覆盖，插入目标可能与 tooltip 显示不一致                                               | 1Hz 前端轮询 + 用户阅读时延 < 几秒，但 race 窗口存在。修复需要 backend 接 expected_pid 参数做 token 校验；v2 改进                               |
+| Spec 未指明每个 DashboardEntryCard 实例独立轮询  | 当前 `useQuickInsertTarget` 在每个挂载的 DashboardEntryCard 中独立运行 1Hz polling，导致 N 卡片 = N invokes/sec                                 | Task 4 设计未做 singleton 化；性能影响小（IPC 调用极轻），但有优化空间。后续如做共享可改为 Context + 单实例                                     |

@@ -2,6 +2,53 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::settings;
 
+type TestExtras = (
+    Option<std::collections::HashMap<String, serde_json::Value>>,
+    Option<std::collections::HashMap<String, String>>,
+);
+
+#[allow(dead_code)]
+/// Resolve the effective `(extra_params, extra_headers)` for a test inference call.
+///
+/// Rule (per docs/specs/2026-05-20-custom-add-model.spec.md):
+/// - If any override is `Some`, both come from the overrides as-is. Thinking
+///   auto-inject is skipped (user is responsible for writing the thinking
+///   keys via the dialog's preset buttons).
+/// - Otherwise, look up the CachedModel by `cached_model_id` and merge its
+///   `extra_params` with any thinking params derived from `is_thinking_model`.
+fn resolve_test_extras(
+    cached_models: &[crate::settings::CachedModel],
+    cached_model_id: Option<&str>,
+    extra_params_override: Option<std::collections::HashMap<String, serde_json::Value>>,
+    extra_headers_override: Option<std::collections::HashMap<String, String>>,
+) -> TestExtras {
+    if extra_params_override.is_some() || extra_headers_override.is_some() {
+        return (extra_params_override, extra_headers_override);
+    }
+
+    let cached_model = cached_model_id.and_then(|id| cached_models.iter().find(|m| m.id == id));
+    let user_params = cached_model.and_then(|m| m.extra_params.clone());
+    let headers = cached_model.and_then(|m| m.extra_headers.clone());
+    let thinking_params = cached_model.and_then(|cm| {
+        crate::settings::thinking_extra_params_with_aliases(
+            &cm.model_id,
+            &cm.provider_id,
+            cm.is_thinking_model,
+            &[cm.custom_label.as_deref().unwrap_or("")],
+        )
+    });
+    let merged_params = match (thinking_params, user_params) {
+        (Some(mut tp), Some(up)) => {
+            tp.extend(up);
+            Some(tp)
+        }
+        (Some(tp), None) => Some(tp),
+        (None, Some(up)) => Some(up),
+        (None, None) => None,
+    };
+    (merged_params, headers)
+}
+
 // Group: Inference Testing
 #[tauri::command]
 #[specta::specta]
@@ -187,4 +234,97 @@ pub async fn test_asr_model_inference(
     _model_id: String,
 ) -> Result<String, String> {
     Ok("Test successful".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::CachedModel;
+    use std::collections::HashMap;
+
+    fn make_cached_model(id: &str, is_thinking: bool) -> CachedModel {
+        CachedModel {
+            id: id.to_string(),
+            name: "test".to_string(),
+            model_type: crate::settings::ModelType::Text,
+            provider_id: "openai".to_string(),
+            model_id: "gpt-4o".to_string(),
+            added_at: "2026-05-20T00:00:00Z".to_string(),
+            is_thinking_model: is_thinking,
+            prompt_message_role: crate::settings::PromptMessageRole::System,
+            custom_label: None,
+            extra_params: Some({
+                let mut m = HashMap::new();
+                m.insert("temperature".to_string(), serde_json::json!(0.7));
+                m
+            }),
+            extra_headers: Some({
+                let mut m = HashMap::new();
+                m.insert("X-Cached".to_string(), "yes".to_string());
+                m
+            }),
+            model_family: None,
+        }
+    }
+
+    #[test]
+    fn override_path_uses_overrides_and_ignores_cached() {
+        let models = vec![make_cached_model("m1", true)];
+        let mut params_override = HashMap::new();
+        params_override.insert("top_p".to_string(), serde_json::json!(0.9));
+        let mut headers_override = HashMap::new();
+        headers_override.insert("X-Inline".to_string(), "yes".to_string());
+
+        let (params, headers) = resolve_test_extras(
+            &models,
+            Some("m1"),
+            Some(params_override.clone()),
+            Some(headers_override.clone()),
+        );
+
+        assert_eq!(
+            params,
+            Some(params_override),
+            "should use override params, not cached"
+        );
+        assert_eq!(
+            headers,
+            Some(headers_override),
+            "should use override headers, not cached"
+        );
+    }
+
+    #[test]
+    fn override_partial_only_params_yields_none_headers() {
+        let models = vec![make_cached_model("m1", false)];
+        let mut params_override = HashMap::new();
+        params_override.insert("top_p".to_string(), serde_json::json!(0.9));
+
+        let (params, headers) =
+            resolve_test_extras(&models, Some("m1"), Some(params_override.clone()), None);
+
+        assert_eq!(params, Some(params_override));
+        assert_eq!(
+            headers, None,
+            "override path drops cached headers when only params provided"
+        );
+    }
+
+    #[test]
+    fn legacy_path_returns_cached_model_extras() {
+        let models = vec![make_cached_model("m1", false)];
+        let (params, headers) = resolve_test_extras(&models, Some("m1"), None, None);
+        assert!(params.is_some(), "should pull params from cached model");
+        assert!(headers.is_some(), "should pull headers from cached model");
+        let p = params.unwrap();
+        assert_eq!(p.get("temperature"), Some(&serde_json::json!(0.7)));
+    }
+
+    #[test]
+    fn legacy_path_no_cached_id_returns_none() {
+        let models = vec![make_cached_model("m1", false)];
+        let (params, headers) = resolve_test_extras(&models, None, None, None);
+        assert_eq!(params, None);
+        assert_eq!(headers, None);
+    }
 }

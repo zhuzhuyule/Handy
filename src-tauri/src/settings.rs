@@ -521,10 +521,13 @@ impl Default for KeyboardImplementation {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum TitleMatchType {
-    /// Simple text contains matching
+    /// Simple text contains matching (substring)
     Text,
     /// Regular expression matching
     Regex,
+    /// Exact literal equality (used by auto-generated rules from the
+    /// suggestion engine — see docs/specs/2026-05-21-app-rule-suggestion-engine.spec.md)
+    Exact,
 }
 
 impl Default for TitleMatchType {
@@ -2349,5 +2352,32 @@ mod tests {
 
         assert!(!profile.disable_selection_clipboard_fallback);
         assert!(!profile.translate_to_english_on_insert);
+    }
+}
+
+#[cfg(test)]
+mod title_match_type_tests {
+    use super::TitleMatchType;
+    use serde_json;
+
+    #[test]
+    fn roundtrip_text() {
+        let v: TitleMatchType = serde_json::from_str("\"text\"").unwrap();
+        assert_eq!(v, TitleMatchType::Text);
+        assert_eq!(serde_json::to_string(&v).unwrap(), "\"text\"");
+    }
+
+    #[test]
+    fn roundtrip_regex() {
+        let v: TitleMatchType = serde_json::from_str("\"regex\"").unwrap();
+        assert_eq!(v, TitleMatchType::Regex);
+        assert_eq!(serde_json::to_string(&v).unwrap(), "\"regex\"");
+    }
+
+    #[test]
+    fn roundtrip_exact_new_variant() {
+        let v: TitleMatchType = serde_json::from_str("\"exact\"").unwrap();
+        assert_eq!(v, TitleMatchType::Exact);
+        assert_eq!(serde_json::to_string(&v).unwrap(), "\"exact\"");
     }
 }

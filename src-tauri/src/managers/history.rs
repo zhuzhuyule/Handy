@@ -2058,6 +2058,7 @@ impl HistoryManager {
                             crate::settings::TitleMatchType::Regex => regex::Regex::new(pattern)
                                 .map(|re| re.is_match(h_title))
                                 .unwrap_or(false),
+                            crate::settings::TitleMatchType::Exact => h_title == pattern,
                         };
                     }
                 } else if window_title.is_some() {

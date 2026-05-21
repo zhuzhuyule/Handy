@@ -2150,6 +2150,9 @@ impl ShortcutAction for TranscribeAction {
                                                             .map(|re| re.is_match(&info.title))
                                                             .unwrap_or(false)
                                                     }
+                                                    crate::settings::TitleMatchType::Exact => {
+                                                        info.title == rule.pattern
+                                                    }
                                                 };
                                                 if matched {
                                                     matched_rules.push(rule);
@@ -2826,6 +2829,9 @@ impl ShortcutAction for TranscribeAction {
                                                 regex::Regex::new(&r.pattern)
                                                     .map(|re| re.is_match(&info.title))
                                                     .unwrap_or(false)
+                                            }
+                                            crate::settings::TitleMatchType::Exact => {
+                                                info.title == r.pattern
                                             }
                                         })
                                         .max_by_key(|r| r.pattern.chars().count());

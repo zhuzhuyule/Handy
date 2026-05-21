@@ -1379,13 +1379,18 @@ export type SkillType =
 "prompt"
 export type TitleMatchType = 
 /**
- * Simple text contains matching
+ * Simple text contains matching (substring)
  */
 "text" | 
 /**
  * Regular expression matching
  */
-"regex"
+"regex" | 
+/**
+ * Exact literal equality (used by auto-generated rules from the
+ * suggestion engine — see docs/specs/2026-05-21-app-rule-suggestion-engine.spec.md)
+ */
+"exact"
 export type TitleRule = { id: string; pattern: string; match_type?: TitleMatchType; policy: AppReviewPolicy; prompt_id: string | null }
 export type WhisperAcceleratorSetting = "auto" | "cpu" | "gpu"
 

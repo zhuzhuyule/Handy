@@ -51,6 +51,8 @@ pub enum SuggestionDecision {
 
 use rusqlite::Connection;
 
+use crate::settings::{AppProfile, AppReviewPolicy, TitleMatchType, TitleRule};
+
 /// Compute whether the just-inserted history row should trigger a suggestion.
 ///
 /// `has_matching_rule` is a closure: `(app_name, title) -> bool`, returning
@@ -136,6 +138,68 @@ where
         count,
         threshold,
     }))
+}
+
+/// Write (or update) the user's decision for a given (app_name, title) pair.
+///
+/// Uses an UPSERT so repeated calls overwrite the previous decision rather
+/// than inserting duplicate rows.
+pub fn record_decision(
+    conn: &Connection,
+    app_name: &str,
+    title: &str,
+    threshold: i64,
+    decision: SuggestionDecision,
+    decision_at: i64,
+) -> rusqlite::Result<()> {
+    let decision_str = match decision {
+        SuggestionDecision::Accepted => "accepted",
+        SuggestionDecision::Dismissed => "dismissed",
+        SuggestionDecision::NeverAgain => "never_again",
+    };
+    conn.execute(
+        "INSERT INTO app_rule_suggestions (app_name, title, last_threshold, decision, decision_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(app_name, title) DO UPDATE SET
+            last_threshold = excluded.last_threshold,
+            decision = excluded.decision,
+            decision_at = excluded.decision_at",
+        rusqlite::params![app_name, title, threshold, decision_str, decision_at],
+    )?;
+    Ok(())
+}
+
+/// Find the AppProfile matching `app_name`, or create a new one. Append a
+/// TitleRule with `match_type = Exact` for the given title/prompt_id.
+/// The caller is responsible for persisting `profiles` (e.g., via save_settings).
+pub fn apply_accepted_suggestion(
+    profiles: &mut Vec<AppProfile>,
+    app_name: &str,
+    title: &str,
+    prompt_id: &str,
+) {
+    let new_rule = TitleRule {
+        id: uuid::Uuid::new_v4().to_string(),
+        pattern: title.to_string(),
+        match_type: TitleMatchType::Exact,
+        policy: AppReviewPolicy::Auto,
+        prompt_id: Some(prompt_id.to_string()),
+    };
+
+    if let Some(existing) = profiles.iter_mut().find(|p| p.name == app_name) {
+        existing.rules.push(new_rule);
+    } else {
+        profiles.push(AppProfile {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: app_name.to_string(),
+            policy: AppReviewPolicy::Auto,
+            prompt_id: None,
+            icon: None,
+            translate_to_english_on_insert: false,
+            disable_selection_clipboard_fallback: false,
+            rules: vec![new_rule],
+        });
+    }
 }
 
 #[cfg(test)]
@@ -334,5 +398,102 @@ mod tests {
             result.is_none(),
             "accepted decision should suppress re-prompt"
         );
+    }
+
+    #[test]
+    fn record_decision_inserts_new_row() {
+        let conn = fresh_db();
+        record_decision(
+            &conn,
+            "Slack",
+            "title",
+            5,
+            SuggestionDecision::Dismissed,
+            100,
+        )
+        .unwrap();
+        let (t, d, at): (i64, String, i64) = conn
+            .query_row(
+                "SELECT last_threshold, decision, decision_at FROM app_rule_suggestions WHERE app_name=? AND title=?",
+                rusqlite::params!["Slack", "title"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(t, 5);
+        assert_eq!(d, "dismissed");
+        assert_eq!(at, 100);
+    }
+
+    #[test]
+    fn record_decision_upserts_existing_row() {
+        let conn = fresh_db();
+        record_decision(
+            &conn,
+            "Slack",
+            "title",
+            5,
+            SuggestionDecision::Dismissed,
+            100,
+        )
+        .unwrap();
+        record_decision(
+            &conn,
+            "Slack",
+            "title",
+            10,
+            SuggestionDecision::NeverAgain,
+            200,
+        )
+        .unwrap();
+        let (t, d, at): (i64, String, i64) = conn
+            .query_row(
+                "SELECT last_threshold, decision, decision_at FROM app_rule_suggestions WHERE app_name=? AND title=?",
+                rusqlite::params!["Slack", "title"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(t, 10);
+        assert_eq!(d, "never_again");
+        assert_eq!(at, 200);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM app_rule_suggestions", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1, "row should be updated in place, not duplicated");
+    }
+
+    #[test]
+    fn apply_creates_new_profile_when_app_absent() {
+        let mut profiles = Vec::new();
+        apply_accepted_suggestion(&mut profiles, "Slack", "Slack | #a", "polish");
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "Slack");
+        assert_eq!(profiles[0].rules.len(), 1);
+        assert_eq!(profiles[0].rules[0].pattern, "Slack | #a");
+        assert_eq!(
+            profiles[0].rules[0].match_type,
+            crate::settings::TitleMatchType::Exact
+        );
+        assert_eq!(profiles[0].rules[0].prompt_id.as_deref(), Some("polish"));
+    }
+
+    #[test]
+    fn apply_appends_to_existing_profile() {
+        use crate::settings::{AppProfile, AppReviewPolicy};
+        let mut profiles = vec![AppProfile {
+            id: "existing".to_string(),
+            name: "Slack".to_string(),
+            policy: AppReviewPolicy::Auto,
+            prompt_id: None,
+            icon: None,
+            translate_to_english_on_insert: false,
+            disable_selection_clipboard_fallback: false,
+            rules: vec![],
+        }];
+        apply_accepted_suggestion(&mut profiles, "Slack", "Slack | #a", "polish");
+        assert_eq!(profiles.len(), 1, "should not create a duplicate profile");
+        assert_eq!(profiles[0].rules.len(), 1);
     }
 }

@@ -475,6 +475,12 @@
       "continue": "继续等待",
       "retry": "重试",
       "cancel": "取消"
+    },
+    "ruleSuggestion": {
+      "message": "你在 {{appName}}（{{title}}）已经用「{{promptName}}」{{count}} 次。要为这个窗口加规则吗？",
+      "accept": "添加规则",
+      "dismiss": "这次不要",
+      "never": "别再问"
     }
   },
   "settings": {
@@ -1137,6 +1143,9 @@
           "nav": "在设置标签之间导航",
           "navKeys": "Command + 1-8",
           "title": "快捷键与使用方法"
+        },
+        "matchType": {
+          "exact": "全量匹配"
         },
         "testMatch": "测试匹配",
         "title": "应用规则",

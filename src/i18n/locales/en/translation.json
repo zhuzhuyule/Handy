@@ -426,6 +426,12 @@
       "continue": "Continue",
       "retry": "Retry",
       "cancel": "Cancel"
+    },
+    "ruleSuggestion": {
+      "message": "You've used '{{promptName}}' {{count}} times in {{appName}} ({{title}}). Add a rule for this window?",
+      "accept": "Add rule",
+      "dismiss": "Not now",
+      "never": "Never ask"
     }
   },
   "settings": {
@@ -1088,6 +1094,9 @@
           "nav": "Navigate between settings tabs",
           "navKeys": "⌘ + 1-8",
           "title": "Shortcuts & Usage"
+        },
+        "matchType": {
+          "exact": "Exact"
         },
         "testMatch": "Test Match",
         "title": "Application Rules",

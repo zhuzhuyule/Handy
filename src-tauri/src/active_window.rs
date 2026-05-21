@@ -63,7 +63,7 @@ pub fn fetch_active_window() -> Result<ActiveWindowInfo, String> {
         active_window.title.clone()
     };
 
-    log::info!(
+    log::debug!(
         "[ActiveWindow] {} | app: {:?} | title: {:?} (fallback: {})",
         if used_accessibility { "FIXED" } else { "RAW" },
         active_window.app_name,

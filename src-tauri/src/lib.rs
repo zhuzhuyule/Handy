@@ -106,6 +106,9 @@ fn build_console_filter() -> env_filter::Filter {
     builder.filter_module("hyper_util", log::LevelFilter::Info);
     // Suppress ERROR logs from updater plugin in dev mode (endpoint not available)
     builder.filter_module("tauri_plugin_updater", log::LevelFilter::Warn);
+    // Suppress ORT (ONNX Runtime) init/graph-optimization verbosity (~150 lines per model load).
+    // Only show warnings and errors from the inference engine.
+    builder.filter_module("ort", log::LevelFilter::Warn);
 
     builder.build()
 }

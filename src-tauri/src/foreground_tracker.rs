@@ -1,5 +1,5 @@
 use crate::active_window::{fetch_active_window, ActiveWindowInfo};
-use log::{debug, info, warn};
+use log::warn;
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
@@ -61,10 +61,9 @@ pub fn start() {
 
     let self_pid = std::process::id() as u64;
     tauri::async_runtime::spawn(async move {
-        // 跨循环状态：上一轮 fetch 是否成功，以及 slot 是否曾被写入。
-        // 用于把日志限制在「状态变化」边沿上，避免 Wayland 每 500ms 刷一行 warn。
+        // 仅在「fetch 状态由 Ok 翻成 Err」的边沿打一行 warn，方便排查权限/Wayland 失败。
+        // 其余正常轮询不输出日志——slot 更新由 backend 自己维护，不对外暴露监控信息。
         let mut last_poll_ok = true;
-        let mut slot_ever_set = false;
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
             let fetched = fetch_active_window();
@@ -80,17 +79,6 @@ pub fn start() {
             last_poll_ok = this_poll_ok;
 
             if let Some(info) = next_slot_value(fetched, self_pid) {
-                if !slot_ever_set {
-                    info!(
-                        "[ForegroundTracker] first slot captured: app='{}' pid={}",
-                        info.app_name, info.process_id
-                    );
-                    slot_ever_set = true;
-                }
-                debug!(
-                    "[ForegroundTracker] slot updated to app='{}' pid={}",
-                    info.app_name, info.process_id
-                );
                 set_last_external_frontmost(info);
             }
         }

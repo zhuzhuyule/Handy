@@ -111,8 +111,7 @@ const TitleRuleRow: React.FC<TitleRuleRowProps> = ({
                   .toLowerCase()
                   .includes(rule.pattern.toLowerCase());
               } else if (rule.match_type === "exact") {
-                matched =
-                  info.title.toLowerCase() === rule.pattern.toLowerCase();
+                matched = info.title === rule.pattern;
               } else {
                 const re = new RegExp(rule.pattern);
                 matched = re.test(info.title);

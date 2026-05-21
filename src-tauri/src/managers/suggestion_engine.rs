@@ -169,6 +169,31 @@ pub fn record_decision(
     Ok(())
 }
 
+/// Test whether any TitleRule in any AppProfile would match the given title
+/// for `app_name`. All match_types are evaluated: Exact = literal equality,
+/// Text = case-sensitive substring, Regex = regex compile + match. Invalid
+/// regex patterns are treated as non-matching.
+pub fn any_rule_matches(profiles: &[AppProfile], app_name: &str, title: &str) -> bool {
+    for profile in profiles {
+        if profile.name != app_name {
+            continue;
+        }
+        for rule in &profile.rules {
+            let hit = match rule.match_type {
+                TitleMatchType::Exact => rule.pattern == title,
+                TitleMatchType::Text => title.contains(&rule.pattern),
+                TitleMatchType::Regex => regex::Regex::new(&rule.pattern)
+                    .map(|re| re.is_match(title))
+                    .unwrap_or(false),
+            };
+            if hit {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Find the AppProfile matching `app_name`, or create a new one. Append a
 /// TitleRule with `match_type = Exact` for the given title/prompt_id.
 /// The caller is responsible for persisting `profiles` (e.g., via save_settings).
@@ -495,5 +520,68 @@ mod tests {
         apply_accepted_suggestion(&mut profiles, "Slack", "Slack | #a", "polish");
         assert_eq!(profiles.len(), 1, "should not create a duplicate profile");
         assert_eq!(profiles[0].rules.len(), 1);
+    }
+
+    fn make_profile(name: &str, rules: Vec<TitleRule>) -> AppProfile {
+        AppProfile {
+            id: "p1".into(),
+            name: name.into(),
+            policy: AppReviewPolicy::Auto,
+            prompt_id: None,
+            icon: None,
+            translate_to_english_on_insert: false,
+            disable_selection_clipboard_fallback: false,
+            rules,
+        }
+    }
+
+    fn make_rule(pattern: &str, mt: TitleMatchType) -> TitleRule {
+        TitleRule {
+            id: "r1".into(),
+            pattern: pattern.into(),
+            match_type: mt,
+            policy: AppReviewPolicy::Auto,
+            prompt_id: None,
+        }
+    }
+
+    #[test]
+    fn any_rule_matches_exact() {
+        let profiles = vec![make_profile(
+            "Slack",
+            vec![make_rule("Slack | #a", TitleMatchType::Exact)],
+        )];
+        assert!(any_rule_matches(&profiles, "Slack", "Slack | #a"));
+        assert!(!any_rule_matches(&profiles, "Slack", "Slack | #b"));
+        assert!(!any_rule_matches(&profiles, "Chrome", "Slack | #a"));
+    }
+
+    #[test]
+    fn any_rule_matches_text_substring() {
+        let profiles = vec![make_profile(
+            "Slack",
+            vec![make_rule("Slack", TitleMatchType::Text)],
+        )];
+        assert!(any_rule_matches(&profiles, "Slack", "Slack | #a"));
+        assert!(any_rule_matches(&profiles, "Slack", "Slack | #b"));
+    }
+
+    #[test]
+    fn any_rule_matches_regex() {
+        let profiles = vec![make_profile(
+            "Slack",
+            vec![make_rule(r"^Slack \| #.+", TitleMatchType::Regex)],
+        )];
+        assert!(any_rule_matches(&profiles, "Slack", "Slack | #anything"));
+        assert!(!any_rule_matches(&profiles, "Slack", "Slack"));
+    }
+
+    #[test]
+    fn any_rule_matches_invalid_regex_returns_false() {
+        let profiles = vec![make_profile(
+            "Slack",
+            vec![make_rule(r"[invalid(regex", TitleMatchType::Regex)],
+        )];
+        assert!(!any_rule_matches(&profiles, "Slack", "Slack | #a"));
     }
 }

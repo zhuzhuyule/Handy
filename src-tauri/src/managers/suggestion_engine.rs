@@ -104,15 +104,18 @@ where
         None => return Ok(None),
     };
 
-    // Check prior decision for this (app, title).
-    let prior: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT last_threshold, decision FROM app_rule_suggestions
-                WHERE app_name = ? AND title = ?",
-            rusqlite::params![&app, &title],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok();
+    // Check prior decision for this (app, title). Only NoRows is benign;
+    // other errors (DB lock, schema mismatch) must propagate.
+    let prior: Option<(i64, String)> = match conn.query_row(
+        "SELECT last_threshold, decision FROM app_rule_suggestions
+            WHERE app_name = ? AND title = ?",
+        rusqlite::params![&app, &title],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ) {
+        Ok(t) => Some(t),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e),
+    };
     if let Some((prior_threshold, decision)) = prior {
         if decision == "never_again" {
             return Ok(None);
@@ -308,5 +311,28 @@ mod tests {
         ).unwrap();
         let result = compute_suggestion(&conn, id, &has_matching_rule_never).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn accepted_prior_decision_still_skips() {
+        // Defensive coverage: an "accepted" decision row should suppress
+        // a suggestion even when has_matching_rule returns false (e.g., the
+        // user accepted, the rule was written, but the rule was then
+        // manually deleted). The persisted decision keeps history quiet.
+        let conn = fresh_db();
+        for _ in 0..4 {
+            insert_history(&conn, Some("Slack"), Some("Slack | #a"), Some("polish"));
+        }
+        let id = insert_history(&conn, Some("Slack"), Some("Slack | #a"), Some("polish"));
+        conn.execute(
+            "INSERT INTO app_rule_suggestions (app_name, title, last_threshold, decision, decision_at) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params!["Slack", "Slack | #a", 5_i64, "accepted", 0_i64],
+        )
+        .unwrap();
+        let result = compute_suggestion(&conn, id, &has_matching_rule_never).unwrap();
+        assert!(
+            result.is_none(),
+            "accepted decision should suppress re-prompt"
+        );
     }
 }

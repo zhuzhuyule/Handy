@@ -74,7 +74,7 @@ export type RecordingRetentionPeriod = z.infer<
 export const AppReviewPolicySchema = z.enum(["auto", "always", "never"]);
 export type AppReviewPolicy = z.infer<typeof AppReviewPolicySchema>;
 
-export const TitleMatchTypeSchema = z.enum(["text", "regex"]);
+export const TitleMatchTypeSchema = z.enum(["text", "regex", "exact"]);
 export type TitleMatchType = z.infer<typeof TitleMatchTypeSchema>;
 
 export const TitleRuleSchema = z.object({

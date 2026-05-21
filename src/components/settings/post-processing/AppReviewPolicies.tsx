@@ -110,6 +110,9 @@ const TitleRuleRow: React.FC<TitleRuleRowProps> = ({
                 matched = info.title
                   .toLowerCase()
                   .includes(rule.pattern.toLowerCase());
+              } else if (rule.match_type === "exact") {
+                matched =
+                  info.title.toLowerCase() === rule.pattern.toLowerCase();
               } else {
                 const re = new RegExp(rule.pattern);
                 matched = re.test(info.title);
@@ -165,6 +168,7 @@ const TitleRuleRow: React.FC<TitleRuleRowProps> = ({
             }
           >
             <SegmentedControl.Item value="text">Text</SegmentedControl.Item>
+            <SegmentedControl.Item value="exact">Exact</SegmentedControl.Item>
             <SegmentedControl.Item value="regex">Regex</SegmentedControl.Item>
           </SegmentedControl.Root>
 

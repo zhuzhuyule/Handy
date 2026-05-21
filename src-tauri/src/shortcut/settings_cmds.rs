@@ -298,7 +298,7 @@ pub fn respond_rule_suggestion(
     let mut settings = settings::get_settings(&app);
 
     if matches!(decision, SuggestionDecision::Accepted) {
-        apply_accepted_suggestion(&mut settings.app_profiles, &app_name, &title, &prompt_id);
+        apply_accepted_suggestion(&mut settings, &app_name, &title, &prompt_id);
         settings::write_settings(&app, settings);
     }
 
@@ -314,6 +314,8 @@ pub fn respond_rule_suggestion(
         .unwrap_or(0);
     record_decision(&conn, &app_name, &title, threshold, decision, now)
         .map_err(|e| e.to_string())?;
+
+    crate::utils::hide_recording_overlay(&app);
 
     Ok(())
 }

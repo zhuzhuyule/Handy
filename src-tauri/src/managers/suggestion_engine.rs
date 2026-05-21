@@ -195,10 +195,11 @@ pub fn any_rule_matches(profiles: &[AppProfile], app_name: &str, title: &str) ->
 }
 
 /// Find the AppProfile matching `app_name`, or create a new one. Append a
-/// TitleRule with `match_type = Exact` for the given title/prompt_id.
-/// The caller is responsible for persisting `profiles` (e.g., via save_settings).
+/// TitleRule with `match_type = Exact` for the given title/prompt_id, and
+/// ensure `app_to_profile` maps `app_name` to the resolved profile id so
+/// routing can find it. Caller persists the mutated settings.
 pub fn apply_accepted_suggestion(
-    profiles: &mut Vec<AppProfile>,
+    settings: &mut crate::settings::AppSettings,
     app_name: &str,
     title: &str,
     prompt_id: &str,
@@ -211,10 +212,33 @@ pub fn apply_accepted_suggestion(
         prompt_id: Some(prompt_id.to_string()),
     };
 
-    if let Some(existing) = profiles.iter_mut().find(|p| p.name == app_name) {
-        existing.rules.push(new_rule);
+    // Prefer an existing profile already linked via app_to_profile (handles
+    // renamed profiles), else match by name, else create.
+    let linked_id = settings.app_to_profile.get(app_name).cloned();
+    let target_id = if let Some(id) = linked_id.as_ref() {
+        if settings.app_profiles.iter().any(|p| &p.id == id) {
+            Some(id.clone())
+        } else {
+            None
+        }
     } else {
-        profiles.push(AppProfile {
+        None
+    };
+
+    let resolved_id = if let Some(id) = target_id {
+        if let Some(existing) = settings.app_profiles.iter_mut().find(|p| p.id == id) {
+            existing.rules.push(new_rule);
+        }
+        id
+    } else if let Some(existing) = settings
+        .app_profiles
+        .iter_mut()
+        .find(|p| p.name == app_name)
+    {
+        existing.rules.push(new_rule);
+        existing.id.clone()
+    } else {
+        let new_profile = AppProfile {
             id: uuid::Uuid::new_v4().to_string(),
             name: app_name.to_string(),
             policy: AppReviewPolicy::Auto,
@@ -223,8 +247,16 @@ pub fn apply_accepted_suggestion(
             translate_to_english_on_insert: false,
             disable_selection_clipboard_fallback: false,
             rules: vec![new_rule],
-        });
-    }
+        };
+        let id = new_profile.id.clone();
+        settings.app_profiles.push(new_profile);
+        id
+    };
+
+    // Always (re)bind app_name -> profile id so routing finds it.
+    settings
+        .app_to_profile
+        .insert(app_name.to_string(), resolved_id);
 }
 
 /// Per-stop dispatch latch — set when an emission has already happened for the
@@ -242,24 +274,27 @@ pub fn reset_emission_latch() {
 /// Called after a paste finishes successfully. Queries the just-inserted
 /// history row, decides whether to emit a `rule-suggestion-show` event, and
 /// emits it. Non-blocking — any DB or emit error is logged at warn level.
-pub fn check_after_paste(app: &tauri::AppHandle, history_id: i64) {
+///
+/// Returns `true` if a suggestion was emitted (caller should keep the overlay
+/// visible until `respond_rule_suggestion` arrives).
+pub fn check_after_paste(app: &tauri::AppHandle, history_id: i64) -> bool {
     use tauri::Emitter;
     use tauri::Manager;
 
     if EMISSION_LATCH_THIS_STOP.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        return;
+        return false;
     }
 
     let settings = crate::settings::get_settings(app);
     let hm = match app.try_state::<std::sync::Arc<crate::managers::history::HistoryManager>>() {
         Some(h) => h,
-        None => return,
+        None => return false,
     };
     let conn = match rusqlite::Connection::open(&hm.db_path) {
         Ok(c) => c,
         Err(e) => {
             log::warn!("[SuggestionEngine] open DB failed: {}", e);
-            return;
+            return false;
         }
     };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
@@ -269,10 +304,10 @@ pub fn check_after_paste(app: &tauri::AppHandle, history_id: i64) {
 
     let payload = match compute_suggestion(&conn, history_id, &matcher) {
         Ok(Some(p)) => p,
-        Ok(None) => return,
+        Ok(None) => return false,
         Err(e) => {
             log::warn!("[SuggestionEngine] compute_suggestion failed: {}", e);
-            return;
+            return false;
         }
     };
 
@@ -282,8 +317,16 @@ pub fn check_after_paste(app: &tauri::AppHandle, history_id: i64) {
         ..payload
     };
 
-    if let Err(e) = app.emit("rule-suggestion-show", &emit_payload) {
-        log::warn!("[SuggestionEngine] emit failed: {}", e);
+    match app.emit("rule-suggestion-show", &emit_payload) {
+        Ok(()) => {
+            // Re-enable cursor events on the overlay so the user can click the card.
+            crate::overlay::focus_recording_overlay(app);
+            true
+        }
+        Err(e) => {
+            log::warn!("[SuggestionEngine] emit failed: {}", e);
+            false
+        }
     }
 }
 
@@ -562,25 +605,37 @@ mod tests {
         assert_eq!(count, 1, "row should be updated in place, not duplicated");
     }
 
+    fn test_settings() -> crate::settings::AppSettings {
+        crate::settings::get_default_settings()
+    }
+
     #[test]
     fn apply_creates_new_profile_when_app_absent() {
-        let mut profiles = Vec::new();
-        apply_accepted_suggestion(&mut profiles, "Slack", "Slack | #a", "polish");
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].name, "Slack");
-        assert_eq!(profiles[0].rules.len(), 1);
-        assert_eq!(profiles[0].rules[0].pattern, "Slack | #a");
+        let mut settings = test_settings();
+        apply_accepted_suggestion(&mut settings, "Slack", "Slack | #a", "polish");
+        assert_eq!(settings.app_profiles.len(), 1);
+        assert_eq!(settings.app_profiles[0].name, "Slack");
+        assert_eq!(settings.app_profiles[0].rules.len(), 1);
+        assert_eq!(settings.app_profiles[0].rules[0].pattern, "Slack | #a");
         assert_eq!(
-            profiles[0].rules[0].match_type,
+            settings.app_profiles[0].rules[0].match_type,
             crate::settings::TitleMatchType::Exact
         );
-        assert_eq!(profiles[0].rules[0].prompt_id.as_deref(), Some("polish"));
+        assert_eq!(
+            settings.app_profiles[0].rules[0].prompt_id.as_deref(),
+            Some("polish")
+        );
+        assert_eq!(
+            settings.app_to_profile.get("Slack"),
+            Some(&settings.app_profiles[0].id.clone()),
+        );
     }
 
     #[test]
     fn apply_appends_to_existing_profile() {
         use crate::settings::{AppProfile, AppReviewPolicy};
-        let mut profiles = vec![AppProfile {
+        let mut settings = test_settings();
+        settings.app_profiles.push(AppProfile {
             id: "existing".to_string(),
             name: "Slack".to_string(),
             policy: AppReviewPolicy::Auto,
@@ -589,10 +644,46 @@ mod tests {
             translate_to_english_on_insert: false,
             disable_selection_clipboard_fallback: false,
             rules: vec![],
-        }];
-        apply_accepted_suggestion(&mut profiles, "Slack", "Slack | #a", "polish");
-        assert_eq!(profiles.len(), 1, "should not create a duplicate profile");
-        assert_eq!(profiles[0].rules.len(), 1);
+        });
+        apply_accepted_suggestion(&mut settings, "Slack", "Slack | #a", "polish");
+        assert_eq!(
+            settings.app_profiles.len(),
+            1,
+            "should not create a duplicate profile"
+        );
+        assert_eq!(settings.app_profiles[0].rules.len(), 1);
+        assert_eq!(
+            settings.app_to_profile.get("Slack"),
+            Some(&"existing".to_string()),
+        );
+    }
+
+    #[test]
+    fn apply_respects_linked_renamed_profile() {
+        use crate::settings::{AppProfile, AppReviewPolicy};
+        let mut settings = test_settings();
+        settings.app_profiles.push(AppProfile {
+            id: "renamed-id".to_string(),
+            name: "Slack (Work)".to_string(), // user renamed
+            policy: AppReviewPolicy::Auto,
+            prompt_id: None,
+            icon: None,
+            translate_to_english_on_insert: false,
+            disable_selection_clipboard_fallback: false,
+            rules: vec![],
+        });
+        settings
+            .app_to_profile
+            .insert("Slack".to_string(), "renamed-id".to_string());
+
+        apply_accepted_suggestion(&mut settings, "Slack", "Slack | #a", "polish");
+
+        assert_eq!(settings.app_profiles.len(), 1, "no duplicate profile");
+        assert_eq!(settings.app_profiles[0].rules.len(), 1);
+        assert_eq!(
+            settings.app_to_profile.get("Slack"),
+            Some(&"renamed-id".to_string()),
+        );
     }
 
     fn make_profile(name: &str, rules: Vec<TitleRule>) -> AppProfile {

@@ -2461,12 +2461,18 @@ impl ShortcutAction for TranscribeAction {
                                                         if let Err(e) = &pasted {
                                                             error!("Failed to paste multi-model result: {}", e);
                                                         }
-                                                        if pasted.is_ok() {
+                                                        let suggestion_emitted = if pasted.is_ok() {
                                                             if let Some(hid) = hid_for_suggest {
-                                                                crate::managers::suggestion_engine::check_after_paste(&ah_for_suggest, hid);
+                                                                crate::managers::suggestion_engine::check_after_paste(&ah_for_suggest, hid)
+                                                            } else {
+                                                                false
                                                             }
+                                                        } else {
+                                                            false
+                                                        };
+                                                        if !suggestion_emitted {
+                                                            utils::hide_recording_overlay(&ah_for_cleanup);
                                                         }
-                                                        utils::hide_recording_overlay(&ah_for_cleanup);
                                                         change_tray_icon(&ah_for_cleanup, TrayIconState::Idle);
                                                     })
                                                     .unwrap_or_else(|e| {
@@ -2782,15 +2788,19 @@ impl ShortcutAction for TranscribeAction {
                                     if let Err(e) = &pasted {
                                         error!("Failed to paste transcription: {}", e);
                                     }
-                                    if pasted.is_ok() {
+                                    let suggestion_emitted = if pasted.is_ok() {
                                         if let Some(hid) = hid_for_suggest {
                                             crate::managers::suggestion_engine::check_after_paste(
                                                 &ah_for_suggest,
                                                 hid,
-                                            );
+                                            )
+                                        } else {
+                                            false
                                         }
-                                    }
-                                    if !error_shown {
+                                    } else {
+                                        false
+                                    };
+                                    if !error_shown && !suggestion_emitted {
                                         utils::hide_recording_overlay(&ah_for_cleanup);
                                         change_tray_icon(&ah_for_cleanup, TrayIconState::Idle);
                                     }
@@ -2972,14 +2982,20 @@ impl ShortcutAction for TranscribeAction {
                                 if let Err(e) = &pasted {
                                     error!("Failed to paste transcription: {}", e);
                                 }
-                                if pasted.is_ok() {
+                                let suggestion_emitted = if pasted.is_ok() {
                                     if let Some(hid) = hid_for_suggest {
                                         crate::managers::suggestion_engine::check_after_paste(
                                             &ah_clone, hid,
-                                        );
+                                        )
+                                    } else {
+                                        false
                                     }
+                                } else {
+                                    false
+                                };
+                                if !suggestion_emitted {
+                                    utils::hide_recording_overlay(&ah_clone);
                                 }
-                                utils::hide_recording_overlay(&ah_clone);
                                 change_tray_icon(&ah_clone, TrayIconState::Idle);
                             })
                             .unwrap_or_else(|e| {

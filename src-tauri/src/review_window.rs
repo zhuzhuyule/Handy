@@ -398,20 +398,6 @@ fn position_window_near_cursor(window: &tauri::WebviewWindow, width: f64, height
     }
 }
 
-/// Pre-warm the review webview (creates it hidden, pays the bundle-load cost
-/// now) so the first actual `show_review_window` after a recording finishes
-/// can skip the ~500 ms cold start. Safe to call multiple times.
-pub fn prewarm_review_window(app_handle: &AppHandle) {
-    // Already exists — nothing to do (either alive from a previous session
-    // or being created right now).
-    if app_handle.get_webview_window("review_window").is_some() {
-        return;
-    }
-    // ensure_review_window builds it hidden; the bundle begins loading
-    // immediately so subsequent show() is instant.
-    let _ = ensure_review_window(app_handle);
-}
-
 /// Creates a fresh review window (hidden). Returns true on success.
 fn ensure_review_window(app_handle: &AppHandle) -> bool {
     // Already exists – nothing to do
@@ -441,7 +427,11 @@ fn ensure_review_window(app_handle: &AppHandle) -> bool {
     .transparent(true)
     .visible(false)
     .accept_first_mouse(true)
-    .focused(true)
+    // 关键：prewarm 阶段创建窗口时 .focused(true) 会在 macOS 上让整个 Votype app
+    // 被激活，把 settings 窗口连带拉到前台、抢走用户原 app 的焦点。后续的
+    // show_review_window() 会显式 show() + set_focus()，所以这里设 false 不会
+    // 破坏 review 流程，只是不在 prewarm 阶段触发 app activation。
+    .focused(false)
     .build()
     {
         Ok(_window) => {

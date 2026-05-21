@@ -776,10 +776,11 @@ impl ShortcutAction for TranscribeAction {
             show_recording_overlay(app);
         }
 
-        // Pre-warm the review webview so its 484 KB bundle is already loaded by
-        // the time recording finishes. First review of the day is otherwise
-        // noticeably delayed by the cold start.
-        crate::review_window::prewarm_review_window(app);
+        // Note: review webview prewarming was previously done here for cold-start
+        // latency, but creating an NSWindow during recording start activates the
+        // entire Votype app on macOS (拉起 settings/Dashboard、抢用户原 app 焦点)。
+        // 改为按需创建：review 窗口在 stop() 真正需要展示时再建一次，第一次会多
+        // ~300ms 冷启动，但不再有焦点抢夺问题。
 
         // Setup channel for receiving audio frames for realtime simulation if using local model
         let (realtime_tx, realtime_rx) = std::sync::mpsc::channel::<Vec<f32>>();

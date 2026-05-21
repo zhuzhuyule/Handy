@@ -227,6 +227,79 @@ pub fn apply_accepted_suggestion(
     }
 }
 
+/// Per-stop dispatch latch — set when an emission has already happened for the
+/// current `TranscribeAction::stop()` run. Prevents stacking multiple overlay
+/// popups when a single paste crosses several thresholds.
+///
+/// `reset_emission_latch()` is called from `TranscribeAction::start()`.
+static EMISSION_LATCH_THIS_STOP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn reset_emission_latch() {
+    EMISSION_LATCH_THIS_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Called after a paste finishes successfully. Queries the just-inserted
+/// history row, decides whether to emit a `rule-suggestion-show` event, and
+/// emits it. Non-blocking — any DB or emit error is logged at warn level.
+pub fn check_after_paste(app: &tauri::AppHandle, history_id: i64) {
+    use tauri::Emitter;
+    use tauri::Manager;
+
+    if EMISSION_LATCH_THIS_STOP.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+
+    let settings = crate::settings::get_settings(app);
+    let hm = match app.try_state::<std::sync::Arc<crate::managers::history::HistoryManager>>() {
+        Some(h) => h,
+        None => return,
+    };
+    let conn = match rusqlite::Connection::open(&hm.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[SuggestionEngine] open DB failed: {}", e);
+            return;
+        }
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+
+    let profiles_snapshot = settings.app_profiles.clone();
+    let matcher = move |a: &str, t: &str| any_rule_matches(&profiles_snapshot, a, t);
+
+    let payload = match compute_suggestion(&conn, history_id, &matcher) {
+        Ok(Some(p)) => p,
+        Ok(None) => return,
+        Err(e) => {
+            log::warn!("[SuggestionEngine] compute_suggestion failed: {}", e);
+            return;
+        }
+    };
+
+    let prompt_name = resolve_prompt_name(&settings, &payload.prompt_id);
+    let emit_payload = SuggestionPayload {
+        prompt_name,
+        ..payload
+    };
+
+    if let Err(e) = app.emit("rule-suggestion-show", &emit_payload) {
+        log::warn!("[SuggestionEngine] emit failed: {}", e);
+    }
+}
+
+fn resolve_prompt_name(settings: &crate::settings::AppSettings, prompt_id: &str) -> String {
+    match prompt_id {
+        "__PASS_THROUGH__" => "无需润色".to_string(),
+        "__LITE_POLISH__" => "轻量润色".to_string(),
+        id => settings
+            .post_process_prompts
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| id.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

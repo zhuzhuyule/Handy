@@ -775,6 +775,7 @@ impl ShortcutAction for TranscribeAction {
             let _ = app.emit("review-rewrite-state", false);
             show_recording_overlay(app);
         }
+        crate::managers::suggestion_engine::reset_emission_latch();
 
         // Note: review webview prewarming was previously done here for cold-start
         // latency, but creating an NSWindow during recording start activates the
@@ -2449,13 +2450,21 @@ impl ShortcutAction for TranscribeAction {
                                                 let ah_for_cleanup = ah_clone.clone();
                                                 let active_window_for_paste =
                                                     active_window_snapshot_for_review.clone();
+                                                let hid_for_suggest = history_id;
                                                 ah_clone
                                                     .run_on_main_thread(move || {
                                                         restore_focus_before_direct_paste(
                                                             active_window_for_paste.as_ref(),
                                                         );
-                                                        if let Err(e) = utils::paste(paste_text, ah_inner) {
+                                                        let ah_for_suggest = ah_inner.clone();
+                                                        let pasted = utils::paste(paste_text, ah_inner);
+                                                        if let Err(e) = &pasted {
                                                             error!("Failed to paste multi-model result: {}", e);
+                                                        }
+                                                        if pasted.is_ok() {
+                                                            if let Some(hid) = hid_for_suggest {
+                                                                crate::managers::suggestion_engine::check_after_paste(&ah_for_suggest, hid);
+                                                            }
                                                         }
                                                         utils::hide_recording_overlay(&ah_for_cleanup);
                                                         change_tray_icon(&ah_for_cleanup, TrayIconState::Idle);
@@ -2753,6 +2762,7 @@ impl ShortcutAction for TranscribeAction {
                             let ah_clone_inner = ah_clone.clone();
                             let ah_for_cleanup = ah_clone.clone();
                             let active_window_for_paste = active_window_snapshot_for_review.clone();
+                            let hid_for_suggest = history_id;
                             ah_clone
                                 .run_on_main_thread(move || {
                                     if error_shown {
@@ -2767,8 +2777,18 @@ impl ShortcutAction for TranscribeAction {
                                     restore_focus_before_direct_paste(
                                         active_window_for_paste.as_ref(),
                                     );
-                                    if let Err(e) = utils::paste(final_text, ah_clone_inner) {
+                                    let ah_for_suggest = ah_clone_inner.clone();
+                                    let pasted = utils::paste(final_text, ah_clone_inner);
+                                    if let Err(e) = &pasted {
                                         error!("Failed to paste transcription: {}", e);
+                                    }
+                                    if pasted.is_ok() {
+                                        if let Some(hid) = hid_for_suggest {
+                                            crate::managers::suggestion_engine::check_after_paste(
+                                                &ah_for_suggest,
+                                                hid,
+                                            );
+                                        }
                                     }
                                     if !error_shown {
                                         utils::hide_recording_overlay(&ah_for_cleanup);
@@ -2943,12 +2963,21 @@ impl ShortcutAction for TranscribeAction {
                                 transcription_clone,
                             )
                             .await;
+                            let hid_for_suggest = history_id;
                             ah.run_on_main_thread(move || {
                                 let ah_for_paste = ah_clone.clone();
                                 show_inserting_overlay(&ah_clone);
                                 restore_focus_before_direct_paste(active_window_for_paste.as_ref());
-                                if let Err(e) = utils::paste(text_for_insert, ah_for_paste) {
+                                let pasted = utils::paste(text_for_insert, ah_for_paste);
+                                if let Err(e) = &pasted {
                                     error!("Failed to paste transcription: {}", e);
+                                }
+                                if pasted.is_ok() {
+                                    if let Some(hid) = hid_for_suggest {
+                                        crate::managers::suggestion_engine::check_after_paste(
+                                            &ah_clone, hid,
+                                        );
+                                    }
                                 }
                                 utils::hide_recording_overlay(&ah_clone);
                                 change_tray_icon(&ah_clone, TrayIconState::Idle);

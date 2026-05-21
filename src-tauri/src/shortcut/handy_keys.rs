@@ -273,7 +273,28 @@ impl HandyKeysState {
             .map_err(|_| "Failed to receive register response")?
     }
 
-    /// Unregister a shortcut binding
+    /// Fire-and-forget unregister: enqueues the unregister command and returns
+    /// immediately without waiting for the manager thread to process it.
+    ///
+    /// **Must be used when calling from the manager thread itself**（典型场景：
+    /// ESC 触发 cancel，cancel 在 manager 线程上跑，再去等 manager 线程响应自己
+    /// → 死锁）。其他线程也可以用——unregister 是幂等的，且 manager 串行处理
+    /// 命令保证顺序。
+    pub fn unregister_nowait(&self, binding: &ShortcutBinding) -> Result<(), String> {
+        let (tx, _rx) = mpsc::channel();
+        self.command_sender
+            .lock()
+            .map_err(|_| "Failed to lock command_sender")?
+            .send(ManagerCommand::Unregister {
+                binding_id: binding.id.clone(),
+                response: tx,
+            })
+            .map_err(|_| "Failed to send unregister command")?;
+        Ok(())
+    }
+
+    /// Unregister a shortcut binding（同步版本，会等 manager 线程响应；不要从
+    /// manager 线程内部调用）
     pub fn unregister(&self, binding: &ShortcutBinding) -> Result<(), String> {
         let (tx, rx) = mpsc::channel();
         self.command_sender
@@ -487,7 +508,12 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Register the cancel shortcut (called when recording starts)
+/// Register the cancel shortcut (called when recording starts).
+///
+/// 同步执行——内部通过 mpsc 与 manager 线程通信，本身就有 ack。
+/// 历史上曾用 `tauri::async_runtime::spawn` 包过一层，结果在 register/unregister
+/// 高频交替时引入 race（一条 spawn 还没跑完就被下一条覆盖），导致 ESC 注册看似成功
+/// 实际未生效。详情见 CLAUDE.md "Critical: Shortcut registration/unregistration"。
 pub fn register_cancel_shortcut(app: &AppHandle) {
     // Disabled on Linux due to instability
     #[cfg(target_os = "linux")]
@@ -498,20 +524,19 @@ pub fn register_cancel_shortcut(app: &AppHandle) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let app_clone = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Some(cancel_binding) = get_settings(&app_clone).bindings.get("cancel").cloned() {
-                if let Some(state) = app_clone.try_state::<HandyKeysState>() {
-                    if let Err(e) = state.register(&cancel_binding) {
-                        error!("Failed to register cancel shortcut: {}", e);
-                    }
+        if let Some(cancel_binding) = get_settings(app).bindings.get("cancel").cloned() {
+            if let Some(state) = app.try_state::<HandyKeysState>() {
+                if let Err(e) = state.register(&cancel_binding) {
+                    error!("Failed to register cancel shortcut: {}", e);
                 }
             }
-        });
+        }
     }
 }
 
-/// Unregister the cancel shortcut (called when recording stops)
+/// Unregister the cancel shortcut. Fire-and-forget——必须不能等 manager 线程响应，
+/// 因为 ESC 触发的 cancel 是在 manager 线程自身上跑的，等响应会死锁。
+/// 命令排队，manager 线程返回 cancel 后会继续处理。
 pub fn unregister_cancel_shortcut(app: &AppHandle) {
     #[cfg(target_os = "linux")]
     {
@@ -521,14 +546,11 @@ pub fn unregister_cancel_shortcut(app: &AppHandle) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let app_clone = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Some(cancel_binding) = get_settings(&app_clone).bindings.get("cancel").cloned() {
-                if let Some(state) = app_clone.try_state::<HandyKeysState>() {
-                    let _ = state.unregister(&cancel_binding);
-                }
+        if let Some(cancel_binding) = get_settings(app).bindings.get("cancel").cloned() {
+            if let Some(state) = app.try_state::<HandyKeysState>() {
+                let _ = state.unregister_nowait(&cancel_binding);
             }
-        });
+        }
     }
 }
 

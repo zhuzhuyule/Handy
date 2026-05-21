@@ -24,7 +24,7 @@ fn cancel_current_operation_inner(
         }
     }
 
-    // Unregister the cancel shortcut asynchronously
+    // Unregister the cancel shortcut (fire-and-forget — see handy_keys::unregister_cancel_shortcut)
     shortcut::unregister_cancel_shortcut(app);
 
     // Cancel any ongoing recording
@@ -142,11 +142,13 @@ fn create_main_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>>
 pub fn cancel_current_operation(app: &AppHandle) {
     use crate::ManagedPendingSkillConfirmation;
 
-    // If there's a pending skill confirmation and the UI is visible, let the overlay handle Esc
-    // The overlay will call confirm_skill with accepted=false
+    // 仅当真的存在 pending skill_id 且 UI 标记为可见时，才让 overlay 接管 ESC。
+    // 修复点：原实现只看 is_ui_visible 一个布尔，若 focus_overlay 在没有真正
+    // pending skill 的情况下被调用（如 ASR 超时路径或异常路径），布尔会被
+    // 错误置 true 且没人复位，导致所有 ESC 被吞、录音无法取消。
     if let Some(pending_state) = app.try_state::<ManagedPendingSkillConfirmation>() {
         if let Ok(guard) = pending_state.lock() {
-            if guard.is_ui_visible {
+            if guard.is_ui_visible && guard.skill_id.is_some() {
                 info!("Skill confirmation UI is visible - overlay will handle Esc, skipping global cancel");
                 return;
             }

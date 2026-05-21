@@ -628,22 +628,23 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
                           : t("dashboard.actions.quickInsertEmpty")
                       }
                     >
-                      {/* Span wrapper: native `disabled` blocks pointer events,
-                          so the Tooltip wouldn't show on a disabled IconButton.
-                          The span receives hover and forwards to the Tooltip. */}
-                      <span className="inline-flex">
-                        <IconButton
-                          variant="ghost"
-                          size="1"
-                          disabled={!quickInsertTarget}
-                          onClick={() =>
-                            handleQuickInsert(entry.transcription_text)
-                          }
-                          className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <IconSend size={14} />
-                        </IconButton>
-                      </span>
+                      <IconButton
+                        variant="ghost"
+                        size="1"
+                        aria-disabled={!quickInsertTarget}
+                        onClick={() => {
+                          if (!quickInsertTarget) return;
+                          handleQuickInsert(entry.transcription_text);
+                        }}
+                        className={
+                          "text-logo-primary hover:bg-logo-primary/10 cursor-pointer " +
+                          (quickInsertTarget
+                            ? ""
+                            : "opacity-50 cursor-not-allowed hover:bg-transparent")
+                        }
+                      >
+                        <IconSend size={14} />
+                      </IconButton>
                     </Tooltip>
                     <Tooltip content={t("dashboard.actions.edit")}>
                       <IconButton
@@ -682,20 +683,23 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
                           : t("dashboard.actions.quickInsertEmpty")
                       }
                     >
-                      {/* See span-wrapper rationale in the Tabs branch above. */}
-                      <span className="inline-flex">
-                        <IconButton
-                          variant="ghost"
-                          size="1"
-                          disabled={!quickInsertTarget}
-                          onClick={() =>
-                            handleQuickInsert(entry.transcription_text)
-                          }
-                          className="text-logo-primary hover:bg-logo-primary/10 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <IconSend size={14} />
-                        </IconButton>
-                      </span>
+                      <IconButton
+                        variant="ghost"
+                        size="1"
+                        aria-disabled={!quickInsertTarget}
+                        onClick={() => {
+                          if (!quickInsertTarget) return;
+                          handleQuickInsert(entry.transcription_text);
+                        }}
+                        className={
+                          "text-logo-primary hover:bg-logo-primary/10 cursor-pointer " +
+                          (quickInsertTarget
+                            ? ""
+                            : "opacity-50 cursor-not-allowed hover:bg-transparent")
+                        }
+                      >
+                        <IconSend size={14} />
+                      </IconButton>
                     </Tooltip>
                     <Tooltip content={t("dashboard.actions.edit")}>
                       <IconButton

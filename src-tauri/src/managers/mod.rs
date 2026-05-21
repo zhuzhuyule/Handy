@@ -11,6 +11,7 @@ pub mod pipeline_log;
 pub mod post_processing;
 pub mod prompt;
 pub mod skill;
+pub mod suggestion_engine;
 pub mod summary;
 pub mod task_clusters;
 pub mod transcription;

@@ -449,6 +449,8 @@ static MIGRATIONS: &[M] = &[
     M::up(crate::managers::task_clusters::MIGRATION_SQL),
     // Migration 46: cluster_feedback table
     M::up(crate::managers::cluster_feedback::MIGRATION_SQL),
+    // Migration 47: app_rule_suggestions table for suggestion engine
+    M::up(crate::managers::suggestion_engine::MIGRATION_SQL),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

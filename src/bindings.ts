@@ -273,6 +273,14 @@ async setAppToProfile(appToProfile: Partial<{ [key in string]: string }>) : Prom
     else return { status: "error", error: e  as any };
 }
 },
+async respondRuleSuggestion(decision: SuggestionDecision, appName: string, title: string, promptId: string, threshold: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("respond_rule_suggestion", { decision, appName, title, promptId, threshold }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeLazyStreamCloseSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_lazy_stream_close_setting", { enabled }) };
@@ -1377,6 +1385,7 @@ export type SkillType =
  * For compatibility with main branch
  */
 "prompt"
+export type SuggestionDecision = "accepted" | "dismissed" | "never_again"
 export type TitleMatchType = 
 /**
  * Simple text contains matching (substring)

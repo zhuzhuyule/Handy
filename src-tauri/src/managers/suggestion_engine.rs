@@ -53,76 +53,106 @@ use rusqlite::Connection;
 
 use crate::settings::{AppProfile, AppReviewPolicy, TitleMatchType, TitleRule};
 
+/// Window label used for the rule-suggestion webview.
+const SUGGESTION_WINDOW_LABEL: &str = "rule_suggestion";
+
+/// Per-window latch — once a decision has been processed (accept / never /
+/// dismiss / close), further `respond_rule_suggestion` calls become no-ops.
+/// Reset every time a fresh window is created.
+static DECISION_APPLIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns `true` if this caller is the first to claim the decision slot.
+/// Used by `respond_rule_suggestion` to make button-click and window-close
+/// idempotent.
+pub fn mark_decision_applied() -> bool {
+    !DECISION_APPLIED.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
 fn show_suggestion_dialog(app: &tauri::AppHandle, payload: SuggestionPayload, prompt_name: String) {
     use tauri::Manager;
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogResult};
+    use tauri::WebviewUrl;
+    use tauri::WebviewWindowBuilder;
 
-    let title_short = if payload.title.chars().count() > 40 {
-        let truncated: String = payload.title.chars().take(40).collect();
-        format!("{}…", truncated)
-    } else {
-        payload.title.clone()
-    };
+    // Reset the per-window latch.
+    DECISION_APPLIED.store(false, std::sync::atomic::Ordering::SeqCst);
 
-    let message = format!(
-        "你在 {}（{}）已经用「{}」{} 次。要为这个窗口加规则吗？",
-        payload.app_name, title_short, prompt_name, payload.count
-    );
+    // If a prior window is still around (shouldn't happen but defensive), close it first.
+    if let Some(existing) = app.get_webview_window(SUGGESTION_WINDOW_LABEL) {
+        let _ = existing.close();
+    }
 
-    let app_handle = app.clone();
     let app_name = payload.app_name.clone();
     let title = payload.title.clone();
-    let prompt_id = payload.prompt_id.clone();
+    let prompt_id_for_close = payload.prompt_id.clone();
     let threshold = payload.threshold;
 
-    let accept_label = "添加规则".to_string();
-    let never_label = "别再问".to_string();
-    let dismiss_label = "这次不要".to_string();
-
-    let accept_match = accept_label.clone();
-    let never_match = never_label.clone();
-
-    app.dialog()
-        .message(message)
-        .title("是否为该窗口添加规则？")
-        .buttons(MessageDialogButtons::YesNoCancelCustom(
-            accept_label,
-            never_label,
-            dismiss_label,
-        ))
-        .show_with_result(move |result| {
-            // tauri-plugin-dialog returns Custom(label) for YesNoCancelCustom
-            // buttons (the Yes/No/Cancel variants are only used for the
-            // non-custom button sets), so we have to match by label string.
-            // Cancel / window-close → Dismissed (matches the user's
-            // "消失即视为不要" semantic).
-            let decision = match &result {
-                MessageDialogResult::Yes | MessageDialogResult::Ok => SuggestionDecision::Accepted,
-                MessageDialogResult::No => SuggestionDecision::NeverAgain,
-                MessageDialogResult::Custom(s) if s == &accept_match => {
-                    SuggestionDecision::Accepted
+    // Minimal percent-encoding so colons/slashes/spaces survive URL query transport.
+    fn enc(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
+                out.push(ch);
+            } else {
+                let mut buf = [0u8; 4];
+                let bytes = ch.encode_utf8(&mut buf).as_bytes();
+                for b in bytes.iter() {
+                    out.push_str(&format!("%{:02X}", b));
                 }
-                MessageDialogResult::Custom(s) if s == &never_match => {
-                    SuggestionDecision::NeverAgain
-                }
-                _ => SuggestionDecision::Dismissed,
-            };
-            log::info!(
-                "[SuggestionEngine] dialog result={:?} → decision={:?}",
-                result,
-                decision
-            );
-
-            // Apply the rule (if accepted) and always record the decision.
-            if matches!(decision, SuggestionDecision::Accepted) {
-                let mut settings = crate::settings::get_settings(&app_handle);
-                apply_accepted_suggestion(&mut settings, &app_name, &title, &prompt_id);
-                crate::settings::write_settings(&app_handle, settings);
             }
+        }
+        out
+    }
 
-            // Best-effort: open a fresh DB connection from the same path and write the decision row.
-            if let Some(hm) =
-                app_handle.try_state::<std::sync::Arc<crate::managers::history::HistoryManager>>()
+    let url_path = format!(
+        "src/rule_suggestion/index.html?app={}&title={}&prompt={}&pid={}&count={}&threshold={}",
+        enc(&payload.app_name),
+        enc(&payload.title),
+        enc(&prompt_name),
+        enc(&payload.prompt_id),
+        payload.count,
+        payload.threshold,
+    );
+
+    let result = WebviewWindowBuilder::new(
+        app,
+        SUGGESTION_WINDOW_LABEL,
+        WebviewUrl::App(url_path.into()),
+    )
+    .title("Votype 规则建议")
+    .inner_size(440.0, 200.0)
+    .min_inner_size(380.0, 160.0)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .closable(true)
+    .decorations(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    // KEY: do NOT focus the window. Keyboard input keeps going to whatever
+    // the user's keystrokes were targeting before the dialog appeared.
+    .focused(false)
+    .accept_first_mouse(true)
+    .build();
+
+    let window = match result {
+        Ok(w) => w,
+        Err(e) => {
+            log::warn!("[SuggestionEngine] failed to build dialog window: {}", e);
+            return;
+        }
+    };
+
+    // Handler: if the window is destroyed before any button click,
+    // record the suggestion as Dismissed (best-effort).
+    let app_for_destroyed = app.clone();
+    let _ = window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            if !mark_decision_applied() {
+                return; // decision already applied via respond_rule_suggestion
+            }
+            log::info!("[SuggestionEngine] window closed without decision — recording dismissed");
+            if let Some(hm) = app_for_destroyed
+                .try_state::<std::sync::Arc<crate::managers::history::HistoryManager>>()
             {
                 if let Ok(conn) = rusqlite::Connection::open(&hm.db_path) {
                     let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
@@ -130,14 +160,21 @@ fn show_suggestion_dialog(app: &tauri::AppHandle, payload: SuggestionPayload, pr
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)
                         .unwrap_or(0);
-                    if let Err(e) =
-                        record_decision(&conn, &app_name, &title, threshold, decision, now)
-                    {
-                        log::warn!("[SuggestionEngine] record_decision failed: {}", e);
+                    if let Err(e) = record_decision(
+                        &conn,
+                        &app_name,
+                        &title,
+                        threshold,
+                        SuggestionDecision::Dismissed,
+                        now,
+                    ) {
+                        log::warn!("[SuggestionEngine] record_decision on close failed: {}", e);
                     }
                 }
             }
-        });
+            let _ = &prompt_id_for_close; // silence unused warning
+        }
+    });
 }
 
 /// Compute whether the just-inserted history row should trigger a suggestion.

@@ -309,6 +309,57 @@ pub fn set_app_profiles(app: AppHandle, profiles: Vec<settings::AppProfile>) -> 
 
 #[tauri::command]
 #[specta::specta]
+pub fn respond_rule_suggestion(
+    app: AppHandle,
+    decision: crate::managers::suggestion_engine::SuggestionDecision,
+    app_name: String,
+    title: String,
+    prompt_id: String,
+    threshold: i64,
+) -> Result<(), String> {
+    use crate::managers::suggestion_engine::{
+        apply_accepted_suggestion, mark_decision_applied, record_decision, SuggestionDecision,
+    };
+
+    // Idempotent: window-close beforeunload + button click can both fire.
+    if !mark_decision_applied() {
+        log::info!(
+            "[SuggestionEngine] respond_rule_suggestion: decision already applied, skipping"
+        );
+        return Ok(());
+    }
+
+    log::info!(
+        "[SuggestionEngine] respond decision={:?} app={} title={}",
+        decision,
+        app_name,
+        title
+    );
+
+    if matches!(decision, SuggestionDecision::Accepted) {
+        let mut s = settings::get_settings(&app);
+        apply_accepted_suggestion(&mut s, &app_name, &title, &prompt_id);
+        settings::write_settings(&app, s);
+    }
+
+    let hm = app
+        .try_state::<std::sync::Arc<crate::managers::history::HistoryManager>>()
+        .ok_or_else(|| "HistoryManager not initialized".to_string())?;
+    let conn = rusqlite::Connection::open(&hm.db_path).map_err(|e| e.to_string())?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))
+        .map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    record_decision(&conn, &app_name, &title, threshold, decision, now)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn set_app_to_profile(
     app: AppHandle,
     app_to_profile: std::collections::HashMap<String, String>,

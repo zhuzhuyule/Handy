@@ -21,6 +21,7 @@ export default defineConfig(async () => ({
         main: resolve(__dirname, "index.html"),
         overlay: resolve(__dirname, "src/overlay/index.html"),
         review: resolve(__dirname, "src/review/index.html"),
+        ruleSuggestion: resolve(__dirname, "src/rule_suggestion/index.html"),
       },
     },
   },

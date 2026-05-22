@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>添加规则</title>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    background: rgba(28, 28, 32, 0.96);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    padding: 18px 22px;
+    box-sizing: border-box;
+    gap: 14px;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  h1 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.4; opacity: 0.95; }
+  .msg { font-size: 13px; line-height: 1.55; opacity: 0.88; word-break: break-word; }
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: auto;
+  }
+  button {
+    appearance: none;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    outline: none;
+  }
+  button:hover { background: rgba(255,255,255,0.06); }
+  button:focus,
+  button:focus-visible,
+  button:focus-within {
+    /* Explicitly remove any focus styling — we don't want a "default button" affordance. */
+    outline: none;
+    box-shadow: none;
+  }
+  button.primary {
+    background: rgba(80, 160, 255, 0.22);
+    border-color: rgba(80, 160, 255, 0.5);
+  }
+  button.danger { opacity: 0.55; }
+</style>
+</head>
+<body>
+  <h1 id="title-line">是否为该窗口添加规则？</h1>
+  <div class="msg" id="msg"></div>
+  <div class="actions">
+    <button id="btn-dismiss" tabindex="-1">这次不要</button>
+    <button id="btn-never" class="danger" tabindex="-1">别再问</button>
+    <button id="btn-accept" class="primary" tabindex="-1">添加规则</button>
+  </div>
+
+<script type="module">
+  const params = new URLSearchParams(window.location.search);
+  const appName    = params.get("app") || "";
+  const title      = params.get("title") || "";
+  const promptName = params.get("prompt") || "";
+  const count      = Number(params.get("count") || 0);
+  const threshold  = Number(params.get("threshold") || 0);
+  const promptId   = params.get("pid") || "";
+
+  // Populate message.
+  const titleDisplay = title.length > 40 ? title.slice(0, 40) + "…" : title;
+  document.getElementById("msg").textContent =
+    `你在 ${appName}（${titleDisplay}）已经用「${promptName}」${count} 次。要为这个窗口加规则吗？`;
+
+  // Block every keyboard event so accidental keystrokes don't trigger anything.
+  // The page itself has tabindex=-1 on all buttons + no autofocus, but defense in depth.
+  const swallow = (e) => { e.preventDefault(); e.stopPropagation(); };
+  window.addEventListener("keydown", swallow, true);
+  window.addEventListener("keyup", swallow, true);
+  window.addEventListener("keypress", swallow, true);
+
+  // Explicitly blur whatever the OS chose to focus.
+  requestAnimationFrame(() => {
+    if (document.activeElement && document.activeElement !== document.body) {
+      document.activeElement.blur();
+    }
+  });
+
+  let decisionApplied = false;
+
+  async function respond(decision) {
+    if (decisionApplied) return;
+    decisionApplied = true;
+    try {
+      await window.__TAURI__.core.invoke("respond_rule_suggestion", {
+        decision,
+        appName,
+        title,
+        promptId,
+        threshold,
+      });
+    } catch (e) {
+      console.error("[RuleSuggestion] respond failed:", e);
+    }
+    try {
+      const { getCurrentWindow } = window.__TAURI__.webviewWindow;
+      await getCurrentWindow().close();
+    } catch (e) { /* ignore */ }
+  }
+
+  document.getElementById("btn-accept").addEventListener("click", () => respond("accepted"));
+  document.getElementById("btn-never").addEventListener("click", () => respond("never_again"));
+  document.getElementById("btn-dismiss").addEventListener("click", () => respond("dismissed"));
+
+  // If the user closes the window via the title-bar X or some external close,
+  // signal Dismissed to the backend before unloading.
+  window.addEventListener("beforeunload", () => {
+    if (decisionApplied) return;
+    try {
+      // Synchronous best-effort. invoke returns a promise but we don't await.
+      window.__TAURI__.core.invoke("respond_rule_suggestion", {
+        decision: "dismissed",
+        appName,
+        title,
+        promptId,
+        threshold,
+      });
+    } catch (e) { /* ignore */ }
+  });
+</script>
+</body>
+</html>

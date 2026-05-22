@@ -249,14 +249,6 @@ async removeAppProfile(id: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async respondRuleSuggestion(decision: SuggestionDecision, appName: string, title: string, promptId: string, threshold: number) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("respond_rule_suggestion", { decision, appName, title, promptId, threshold }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async assignAppToProfile(appId: string, profileId: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("assign_app_to_profile", { appId, profileId }) };
@@ -1385,7 +1377,6 @@ export type SkillType =
  * For compatibility with main branch
  */
 "prompt"
-export type SuggestionDecision = "accepted" | "dismissed" | "never_again"
 export type TitleMatchType = 
 /**
  * Simple text contains matching (substring)

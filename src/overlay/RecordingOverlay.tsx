@@ -37,20 +37,6 @@ type SkillConfirmationEvent = {
   selected_text_preview?: string;
 };
 
-// Rule suggestion event payload (sent by backend SuggestionEngine after a
-// successful paste when a (app, title, prompt_id) triplet has crossed
-// the 5/10/20/40 threshold ladder and no AppProfile TitleRule yet matches).
-type RuleSuggestionEvent = {
-  app_name: string;
-  title: string;
-  prompt_id: string;
-  prompt_name: string;
-  count: number;
-  threshold: number;
-};
-
-type SuggestionDecision = "accepted" | "dismissed" | "never_again";
-
 const stripTrailingSentencePunctuation = (input: string) => {
   let out = input.trimEnd();
   if (!out) return out;
@@ -137,8 +123,6 @@ const RecordingOverlay: React.FC<RecordingOverlayProps> = ({
   const [chainedPromptName, setChainedPromptName] = useState<string>("");
   const [skillConfirmation, setSkillConfirmation] =
     useState<SkillConfirmationEvent | null>(null);
-  const [ruleSuggestion, setRuleSuggestion] =
-    useState<RuleSuggestionEvent | null>(null);
   // Multi-model post-process progress tracking
   const [multiModelProgress, setMultiModelProgress] = useState<
     Record<
@@ -174,26 +158,6 @@ const RecordingOverlay: React.FC<RecordingOverlayProps> = ({
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-
-  const respondToRuleSuggestion = useCallback(
-    async (decision: SuggestionDecision) => {
-      if (!ruleSuggestion) return;
-      try {
-        await invoke("respond_rule_suggestion", {
-          decision,
-          appName: ruleSuggestion.app_name,
-          title: ruleSuggestion.title,
-          promptId: ruleSuggestion.prompt_id,
-          threshold: ruleSuggestion.threshold,
-        });
-      } catch (e) {
-        console.error("[RuleSuggestion] respond failed:", e);
-      } finally {
-        setRuleSuggestion(null);
-      }
-    },
-    [ruleSuggestion],
-  );
 
   const resetOverlayRecordingState = () => {
     finalLockedRef.current = false;
@@ -516,19 +480,6 @@ const RecordingOverlay: React.FC<RecordingOverlayProps> = ({
         return;
       }
       unlisteners.push(unlistenSkillConfirmation);
-
-      const unlistenRuleSuggestion = await listen<RuleSuggestionEvent>(
-        "rule-suggestion-show",
-        (event) => {
-          console.log("[RuleSuggestion] Received event:", event.payload);
-          setRuleSuggestion(event.payload);
-        },
-      );
-      if (disposed) {
-        unlistenRuleSuggestion();
-        return;
-      }
-      unlisteners.push(unlistenRuleSuggestion);
 
       // Listen for multi-model post-process start
       const unlistenMultiModelStart = await listen<{
@@ -961,46 +912,6 @@ const RecordingOverlay: React.FC<RecordingOverlayProps> = ({
                 </Box>
               )}
             </Flex>
-          )}
-
-          {ruleSuggestion && !skillConfirmation && (
-            <div className="rule-suggestion-card">
-              <div className="rule-suggestion-text">
-                {t(
-                  "overlay.ruleSuggestion.message",
-                  "You've used '{{promptName}}' {{count}} times in {{appName}} ({{title}}). Add a rule for this window?",
-                  {
-                    promptName: ruleSuggestion.prompt_name,
-                    count: ruleSuggestion.count,
-                    appName: ruleSuggestion.app_name,
-                    title:
-                      ruleSuggestion.title.length > 40
-                        ? ruleSuggestion.title.slice(0, 40) + "…"
-                        : ruleSuggestion.title,
-                  },
-                )}
-              </div>
-              <div className="rule-suggestion-actions">
-                <button
-                  className="rule-suggestion-accept"
-                  onClick={() => respondToRuleSuggestion("accepted")}
-                >
-                  {t("overlay.ruleSuggestion.accept", "Add rule")}
-                </button>
-                <button
-                  className="rule-suggestion-dismiss"
-                  onClick={() => respondToRuleSuggestion("dismissed")}
-                >
-                  {t("overlay.ruleSuggestion.dismiss", "Not now")}
-                </button>
-                <button
-                  className="rule-suggestion-never"
-                  onClick={() => respondToRuleSuggestion("never_again")}
-                >
-                  {t("overlay.ruleSuggestion.never", "Never ask")}
-                </button>
-              </div>
-            </div>
           )}
         </Flex>
 

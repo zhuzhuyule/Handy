@@ -283,45 +283,6 @@ pub fn remove_app_profile(app: AppHandle, id: String) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn respond_rule_suggestion(
-    app: AppHandle,
-    decision: crate::managers::suggestion_engine::SuggestionDecision,
-    app_name: String,
-    title: String,
-    prompt_id: String,
-    threshold: i64,
-) -> Result<(), String> {
-    use crate::managers::suggestion_engine::{
-        apply_accepted_suggestion, record_decision, SuggestionDecision,
-    };
-
-    let mut settings = settings::get_settings(&app);
-
-    if matches!(decision, SuggestionDecision::Accepted) {
-        apply_accepted_suggestion(&mut settings, &app_name, &title, &prompt_id);
-        settings::write_settings(&app, settings);
-    }
-
-    let hm = app
-        .try_state::<std::sync::Arc<crate::managers::history::HistoryManager>>()
-        .ok_or_else(|| "HistoryManager not initialized".to_string())?;
-    let conn = rusqlite::Connection::open(&hm.db_path).map_err(|e| e.to_string())?;
-    conn.busy_timeout(std::time::Duration::from_millis(5000))
-        .map_err(|e| e.to_string())?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    record_decision(&conn, &app_name, &title, threshold, decision, now)
-        .map_err(|e| e.to_string())?;
-
-    crate::utils::hide_recording_overlay(&app);
-
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
 pub fn assign_app_to_profile(
     app: AppHandle,
     app_id: String,

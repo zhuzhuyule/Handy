@@ -53,6 +53,70 @@ use rusqlite::Connection;
 
 use crate::settings::{AppProfile, AppReviewPolicy, TitleMatchType, TitleRule};
 
+fn show_suggestion_dialog(app: &tauri::AppHandle, payload: SuggestionPayload, prompt_name: String) {
+    use tauri::Manager;
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogResult};
+
+    let title_short = if payload.title.chars().count() > 40 {
+        let truncated: String = payload.title.chars().take(40).collect();
+        format!("{}…", truncated)
+    } else {
+        payload.title.clone()
+    };
+
+    let message = format!(
+        "你在 {}（{}）已经用「{}」{} 次。要为这个窗口加规则吗？",
+        payload.app_name, title_short, prompt_name, payload.count
+    );
+
+    let app_handle = app.clone();
+    let app_name = payload.app_name.clone();
+    let title = payload.title.clone();
+    let prompt_id = payload.prompt_id.clone();
+    let threshold = payload.threshold;
+
+    app.dialog()
+        .message(message)
+        .title("是否为该窗口添加规则？")
+        .buttons(MessageDialogButtons::YesNoCancelCustom(
+            "添加规则".to_string(),
+            "别再问".to_string(),
+            "这次不要".to_string(),
+        ))
+        .show_with_result(move |result| {
+            let decision = match result {
+                MessageDialogResult::Yes => SuggestionDecision::Accepted,
+                MessageDialogResult::No => SuggestionDecision::NeverAgain,
+                _ => SuggestionDecision::Dismissed,
+            };
+
+            // Apply the rule (if accepted) and always record the decision.
+            if matches!(decision, SuggestionDecision::Accepted) {
+                let mut settings = crate::settings::get_settings(&app_handle);
+                apply_accepted_suggestion(&mut settings, &app_name, &title, &prompt_id);
+                crate::settings::write_settings(&app_handle, settings);
+            }
+
+            // Best-effort: open a fresh DB connection from the same path and write the decision row.
+            if let Some(hm) =
+                app_handle.try_state::<std::sync::Arc<crate::managers::history::HistoryManager>>()
+            {
+                if let Ok(conn) = rusqlite::Connection::open(&hm.db_path) {
+                    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    if let Err(e) =
+                        record_decision(&conn, &app_name, &title, threshold, decision, now)
+                    {
+                        log::warn!("[SuggestionEngine] record_decision failed: {}", e);
+                    }
+                }
+            }
+        });
+}
+
 /// Compute whether the just-inserted history row should trigger a suggestion.
 ///
 /// `has_matching_rule` is a closure: `(app_name, title) -> bool`, returning
@@ -272,29 +336,26 @@ pub fn reset_emission_latch() {
 }
 
 /// Called after a paste finishes successfully. Queries the just-inserted
-/// history row, decides whether to emit a `rule-suggestion-show` event, and
-/// emits it. Non-blocking — any DB or emit error is logged at warn level.
-///
-/// Returns `true` if a suggestion was emitted (caller should keep the overlay
-/// visible until `respond_rule_suggestion` arrives).
-pub fn check_after_paste(app: &tauri::AppHandle, history_id: i64) -> bool {
-    use tauri::Emitter;
+/// history row, decides whether to surface a suggestion, and if so opens
+/// a native confirmation dialog. The user's choice is persisted directly
+/// from the dialog callback (no frontend round-trip).
+pub fn check_after_paste(app: &tauri::AppHandle, history_id: i64) {
     use tauri::Manager;
 
     if EMISSION_LATCH_THIS_STOP.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        return false;
+        return;
     }
 
     let settings = crate::settings::get_settings(app);
     let hm = match app.try_state::<std::sync::Arc<crate::managers::history::HistoryManager>>() {
         Some(h) => h,
-        None => return false,
+        None => return,
     };
     let conn = match rusqlite::Connection::open(&hm.db_path) {
         Ok(c) => c,
         Err(e) => {
             log::warn!("[SuggestionEngine] open DB failed: {}", e);
-            return false;
+            return;
         }
     };
     let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
@@ -304,30 +365,20 @@ pub fn check_after_paste(app: &tauri::AppHandle, history_id: i64) -> bool {
 
     let payload = match compute_suggestion(&conn, history_id, &matcher) {
         Ok(Some(p)) => p,
-        Ok(None) => return false,
+        Ok(None) => return,
         Err(e) => {
             log::warn!("[SuggestionEngine] compute_suggestion failed: {}", e);
-            return false;
+            return;
         }
     };
 
     let prompt_name = resolve_prompt_name(&settings, &payload.prompt_id);
-    let emit_payload = SuggestionPayload {
-        prompt_name,
-        ..payload
-    };
 
-    match app.emit("rule-suggestion-show", &emit_payload) {
-        Ok(()) => {
-            // Re-enable cursor events on the overlay so the user can click the card.
-            crate::overlay::focus_recording_overlay(app);
-            true
-        }
-        Err(e) => {
-            log::warn!("[SuggestionEngine] emit failed: {}", e);
-            false
-        }
-    }
+    // Drop the connection before invoking the dialog so it doesn't get held
+    // across the async callback.
+    drop(conn);
+
+    show_suggestion_dialog(app, payload, prompt_name);
 }
 
 fn resolve_prompt_name(settings: &crate::settings::AppSettings, prompt_id: &str) -> String {

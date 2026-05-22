@@ -262,6 +262,12 @@ pub async fn confirm_reviewed_transcription(
         result.is_ok()
     );
 
+    if result.is_ok() {
+        if let Some(hid) = history_id {
+            crate::managers::suggestion_engine::check_after_paste(&app, hid);
+        }
+    }
+
     if english_needs_translation {
         if result.is_ok() {
             // Translation path only: flip the already-visible "翻译中…" overlay

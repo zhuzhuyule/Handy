@@ -75,20 +75,43 @@ fn show_suggestion_dialog(app: &tauri::AppHandle, payload: SuggestionPayload, pr
     let prompt_id = payload.prompt_id.clone();
     let threshold = payload.threshold;
 
+    let accept_label = "添加规则".to_string();
+    let never_label = "别再问".to_string();
+    let dismiss_label = "这次不要".to_string();
+
+    let accept_match = accept_label.clone();
+    let never_match = never_label.clone();
+
     app.dialog()
         .message(message)
         .title("是否为该窗口添加规则？")
         .buttons(MessageDialogButtons::YesNoCancelCustom(
-            "添加规则".to_string(),
-            "别再问".to_string(),
-            "这次不要".to_string(),
+            accept_label,
+            never_label,
+            dismiss_label,
         ))
         .show_with_result(move |result| {
-            let decision = match result {
-                MessageDialogResult::Yes => SuggestionDecision::Accepted,
+            // tauri-plugin-dialog returns Custom(label) for YesNoCancelCustom
+            // buttons (the Yes/No/Cancel variants are only used for the
+            // non-custom button sets), so we have to match by label string.
+            // Cancel / window-close → Dismissed (matches the user's
+            // "消失即视为不要" semantic).
+            let decision = match &result {
+                MessageDialogResult::Yes | MessageDialogResult::Ok => SuggestionDecision::Accepted,
                 MessageDialogResult::No => SuggestionDecision::NeverAgain,
+                MessageDialogResult::Custom(s) if s == &accept_match => {
+                    SuggestionDecision::Accepted
+                }
+                MessageDialogResult::Custom(s) if s == &never_match => {
+                    SuggestionDecision::NeverAgain
+                }
                 _ => SuggestionDecision::Dismissed,
             };
+            log::info!(
+                "[SuggestionEngine] dialog result={:?} → decision={:?}",
+                result,
+                decision
+            );
 
             // Apply the rule (if accepted) and always record the decision.
             if matches!(decision, SuggestionDecision::Accepted) {

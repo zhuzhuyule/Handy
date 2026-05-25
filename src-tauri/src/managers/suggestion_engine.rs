@@ -73,13 +73,25 @@ fn show_suggestion_dialog(app: &tauri::AppHandle, payload: SuggestionPayload, pr
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
 
-    // Reset the per-window latch.
-    DECISION_APPLIED.store(false, std::sync::atomic::Ordering::SeqCst);
-
-    // If a prior window is still around (shouldn't happen but defensive), close it first.
+    // If a prior suggestion dialog is still on screen, do NOT close-then-create.
+    // The close path triggers the existing window's `Destroyed` handler, which
+    // would claim DECISION_APPLIED for the old payload and silently no-op the
+    // user's clicks on the new window. Just skip this trigger; the user has a
+    // pending dialog already. They'll get re-prompted on a future recording
+    // once they've responded to (or closed) the current one.
     if let Some(existing) = app.get_webview_window(SUGGESTION_WINDOW_LABEL) {
-        let _ = existing.close();
+        log::info!(
+            "[SuggestionEngine] dialog already open for prior trigger; skipping new dialog for app={} title={}",
+            payload.app_name,
+            payload.title,
+        );
+        // Best-effort: bring the existing dialog forward so the user sees it.
+        let _ = existing.set_focus();
+        return;
     }
+
+    // Reset the per-window latch — only when we're actually creating a new window.
+    DECISION_APPLIED.store(false, std::sync::atomic::Ordering::SeqCst);
 
     let app_name = payload.app_name.clone();
     let title = payload.title.clone();
@@ -128,9 +140,17 @@ fn show_suggestion_dialog(app: &tauri::AppHandle, payload: SuggestionPayload, pr
     .decorations(true)
     .always_on_top(true)
     .skip_taskbar(true)
-    // KEY: do NOT focus the window. Keyboard input keeps going to whatever
-    // the user's keystrokes were targeting before the dialog appeared.
-    .focused(false)
+    // Focus the window so its WKWebView receives mouse events normally on
+    // macOS. (With focused(false) + skip_taskbar(true), the window becomes a
+    // "floating utility" that doesn't reliably accept clicks until activated.)
+    //
+    // Keyboard safety is enforced by the page itself, NOT by hiding focus:
+    //   - all buttons have tabindex="-1" and no autofocus
+    //   - the page registers capture-phase keydown/keyup/keypress handlers
+    //     that preventDefault + stopPropagation on every key
+    //   - on first paint the page calls document.activeElement.blur()
+    // So an accidental Enter from a preceding shortcut hits nothing.
+    .focused(true)
     .accept_first_mouse(true)
     .build();
 

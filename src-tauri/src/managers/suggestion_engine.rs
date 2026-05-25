@@ -131,8 +131,8 @@ fn show_suggestion_dialog(app: &tauri::AppHandle, payload: SuggestionPayload, pr
         WebviewUrl::App(url_path.into()),
     )
     .title("Votype 规则建议")
-    .inner_size(440.0, 200.0)
-    .min_inner_size(380.0, 160.0)
+    .inner_size(480.0, 220.0)
+    .min_inner_size(420.0, 180.0)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)

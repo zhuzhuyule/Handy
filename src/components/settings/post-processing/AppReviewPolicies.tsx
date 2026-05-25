@@ -20,6 +20,7 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import React, { useCallback, useEffect, useState } from "react";
 import { AppPickerDialog } from "./dialogs/AppPickerDialog";
 import { useTranslation } from "react-i18next";
@@ -531,8 +532,35 @@ const ProfileGroupCard: React.FC<ProfileGroupCardProps> = ({
 
 export const AppProfilesManager: React.FC = () => {
   const { t } = useTranslation();
-  const { settings, updateSetting } = useSettings();
+  const { settings, updateSetting, refreshSettings } = useSettings();
   const { skills } = useSkills();
+
+  // Refresh when the backend emits app-profiles-updated (e.g. after a rule
+  // suggestion is accepted) so the new TitleRule appears without a manual reload.
+  useEffect(() => {
+    const unlistenPromise = listen("app-profiles-updated", () => {
+      console.log("[AppRules] app-profiles-updated event received");
+      void refreshSettings();
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [refreshSettings]);
+
+  // Safety-net refresh: if the settings window was hidden and becomes visible
+  // again (e.g. after closing the suggestion dialog), pull latest settings.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        console.log("[AppRules] window became visible, refreshing");
+        void refreshSettings();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [refreshSettings]);
   const [isCapturing, setIsCapturing] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [suggestedApps, setSuggestedApps] = useState<string[]>([]);

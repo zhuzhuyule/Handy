@@ -340,6 +340,16 @@ pub fn respond_rule_suggestion(
         let mut s = settings::get_settings(&app);
         apply_accepted_suggestion(&mut s, &app_name, &title, &prompt_id);
         settings::write_settings(&app, s);
+
+        // Notify any open windows so their settings UI re-fetches and shows
+        // the freshly-added TitleRule without a manual reload.
+        use tauri::Emitter;
+        if let Err(e) = app.emit("app-profiles-updated", ()) {
+            log::warn!(
+                "[SuggestionEngine] failed to emit app-profiles-updated: {}",
+                e
+            );
+        }
     }
 
     let hm = app

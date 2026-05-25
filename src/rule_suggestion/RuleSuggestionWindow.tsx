@@ -57,27 +57,30 @@ export const RuleSuggestionWindow: React.FC<Props> = ({ payload }) => {
   }, []);
 
   const respond = useCallback(
-    async (decision: Decision) => {
+    (decision: Decision) => {
       if (decisionApplied.current) return;
       decisionApplied.current = true;
       setBusy(true);
       console.log("[RuleSuggestion] respond", { decision, payload });
-      try {
-        await invoke("respond_rule_suggestion", {
-          decision,
-          appName: payload.appName,
-          title: payload.title,
-          promptId: payload.promptId,
-          threshold: payload.threshold,
-        });
-      } catch (e) {
+
+      // Fire-and-forget invoke. The backend writes settings + records the
+      // decision in the database; we don't make the user wait for that
+      // round-trip. If it fails the JS console error surfaces in DevTools;
+      // any inconsistency will self-heal next time the engine runs.
+      void invoke("respond_rule_suggestion", {
+        decision,
+        appName: payload.appName,
+        title: payload.title,
+        promptId: payload.promptId,
+        threshold: payload.threshold,
+      }).catch((e) => {
         console.error("[RuleSuggestion] invoke failed:", e);
-      }
-      try {
-        await getCurrentWindow().close();
-      } catch (e) {
-        console.error("[RuleSuggestion] close failed:", e);
-      }
+      });
+
+      // Close the window immediately so the click feels instant.
+      getCurrentWindow()
+        .close()
+        .catch((e) => console.error("[RuleSuggestion] close failed:", e));
     },
     [payload],
   );

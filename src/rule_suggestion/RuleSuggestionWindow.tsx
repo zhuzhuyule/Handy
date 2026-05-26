@@ -1,4 +1,4 @@
-import { Box, Button, Flex, Heading, Text } from "@radix-ui/themes";
+import { Box, Button, DataList, Flex, Heading, Text } from "@radix-ui/themes";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -116,9 +116,28 @@ export const RuleSuggestionWindow: React.FC<Props> = ({ payload }) => {
       <Heading size="3" weight="medium">
         是否为该窗口添加规则？
       </Heading>
-      <Text size="2" color="gray" style={{ lineHeight: 1.5 }}>
-        你在 <b>{payload.appName}</b>（{titleDisplay}）已经用「
-        {payload.promptName}」{payload.count} 次。要为这个窗口加规则吗？
+      <DataList.Root size="2" orientation="horizontal">
+        <DataList.Item>
+          <DataList.Label minWidth="64px">应用</DataList.Label>
+          <DataList.Value>{payload.appName}</DataList.Value>
+        </DataList.Item>
+        <DataList.Item>
+          <DataList.Label minWidth="64px">窗口</DataList.Label>
+          <DataList.Value style={{ wordBreak: "break-all" }}>
+            {titleDisplay}
+          </DataList.Value>
+        </DataList.Item>
+        <DataList.Item>
+          <DataList.Label minWidth="64px">提示词</DataList.Label>
+          <DataList.Value>{payload.promptName}</DataList.Value>
+        </DataList.Item>
+        <DataList.Item>
+          <DataList.Label minWidth="64px">已使用</DataList.Label>
+          <DataList.Value>{payload.count} 次</DataList.Value>
+        </DataList.Item>
+      </DataList.Root>
+      <Text size="1" color="gray">
+        添加后，下次在该窗口录音将自动应用此提示词。
       </Text>
       <Flex
         gap="2"

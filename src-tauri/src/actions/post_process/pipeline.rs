@@ -16,7 +16,67 @@ use tauri::{AppHandle, Emitter, Manager};
 ///   4. Execute polish
 ///
 /// Returns `PipelineResult` — caller handles all UI (review window, paste, history).
+/// Pipeline timeout (per spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
+/// On exceed, the whole pipeline returns ASR original text as PassThrough.
+const PIPELINE_TIMEOUT_SECS: u64 = 10;
+
 pub async fn unified_post_process(
+    app_handle: &AppHandle,
+    settings: &AppSettings,
+    transcription: &str,
+    streaming_transcription: Option<&str>,
+    show_overlay: bool,
+    override_prompt_id: Option<String>,
+    app_name: Option<String>,
+    window_title: Option<String>,
+    match_pattern: Option<String>,
+    match_type: Option<crate::settings::TitleMatchType>,
+    history_id: Option<i64>,
+    skill_mode: bool,
+    review_editor_active: bool,
+    selected_text: Option<String>,
+    review_document_text: Option<String>,
+    cursor_context: Option<crate::clipboard::CursorContext>,
+) -> super::PipelineResult {
+    let original_text = transcription.to_string();
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(PIPELINE_TIMEOUT_SECS),
+        unified_post_process_inner(
+            app_handle,
+            settings,
+            transcription,
+            streaming_transcription,
+            show_overlay,
+            override_prompt_id,
+            app_name,
+            window_title,
+            match_pattern,
+            match_type,
+            history_id,
+            skill_mode,
+            review_editor_active,
+            selected_text,
+            review_document_text,
+            cursor_context,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            log::warn!(
+                "[UnifiedPipeline] exceeded {}s ceiling — falling back to PassThrough",
+                PIPELINE_TIMEOUT_SECS
+            );
+            super::PipelineResult::PassThrough {
+                text: original_text,
+                intent_token_count: None,
+            }
+        }
+    }
+}
+
+async fn unified_post_process_inner(
     app_handle: &AppHandle,
     settings: &AppSettings,
     transcription: &str,

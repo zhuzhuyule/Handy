@@ -82,63 +82,89 @@ pub(super) async fn execute_smart_action_routing(
             let text = text.clone();
             let metrics = intent_metrics.clone();
             let hist_id = intent_history_id;
+            let id_for_err = model_id.clone();
             async move {
-                let (prov, remote_model) = resolve_cached_model_to_provider_owned(&s, &model_id)
-                    .ok_or_else(|| format!("Model {} not found or invalid", model_id))?;
-                // Resolve the API model_id and provider_id for logging
-                let log_model_id = s
-                    .cached_models
-                    .iter()
-                    .find(|m| m.id == model_id)
-                    .map(|m| m.model_id.clone())
-                    .unwrap_or_else(|| model_id.clone());
-                let log_provider_id = prov.id.clone();
+                // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(super::core::PER_CALL_TIMEOUT_SECS),
+                    async move {
+                        let (prov, remote_model) = resolve_cached_model_to_provider_owned(
+                            &s, &model_id,
+                        )
+                        .ok_or_else(|| format!("Model {} not found or invalid", model_id))?;
+                        // Resolve the API model_id and provider_id for logging
+                        let log_model_id = s
+                            .cached_models
+                            .iter()
+                            .find(|m| m.id == model_id)
+                            .map(|m| m.model_id.clone())
+                            .unwrap_or_else(|| model_id.clone());
+                        let log_provider_id = prov.id.clone();
 
-                let call_start = std::time::Instant::now();
-                let (result, err, error_msg, token_count) = super::core::execute_llm_request(
-                    &app,
-                    &s,
-                    &prov,
-                    &remote_model,
-                    None,
-                    &sys_prompt,
-                    Some(&text),
-                    None,
-                    None,
-                    None,
-                    None,
+                        let call_start = std::time::Instant::now();
+                        let (result, err, error_msg, token_count) =
+                            super::core::execute_llm_request(
+                                &app,
+                                &s,
+                                &prov,
+                                &remote_model,
+                                None,
+                                &sys_prompt,
+                                Some(&text),
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
+                            .await;
+                        let elapsed_ms = call_start.elapsed().as_millis() as i64;
+
+                        // Self-log metrics for this participant
+                        if let Some(ref m) = metrics {
+                            let token_est = token_count.map(|t| t as f64);
+                            let speed = match (token_est, elapsed_ms) {
+                                (Some(est), dur) if dur > 0 => Some(est / dur as f64 * 1000.0),
+                                _ => None,
+                            };
+                            let err_msg = if err { error_msg.clone() } else { None };
+                            let _ = m.log_call(&crate::managers::llm_metrics::LlmCallRecord {
+                                history_id: hist_id,
+                                model_id: log_model_id,
+                                provider: log_provider_id,
+                                call_type: "intent".to_string(),
+                                input_tokens: None,
+                                output_tokens: None,
+                                total_tokens: token_count,
+                                token_estimate: token_est,
+                                duration_ms: elapsed_ms,
+                                tokens_per_sec: speed,
+                                error: err_msg,
+                                is_fallback: false, // closure cannot distinguish primary vs fallback
+                            });
+                        }
+
+                        if err {
+                            Err(error_msg.unwrap_or_else(|| "LLM error".into()))
+                        } else {
+                            result.ok_or_else(|| "Empty result".into())
+                        }
+                    },
                 )
-                .await;
-                let elapsed_ms = call_start.elapsed().as_millis() as i64;
-
-                // Self-log metrics for this participant
-                if let Some(ref m) = metrics {
-                    let token_est = token_count.map(|t| t as f64);
-                    let speed = match (token_est, elapsed_ms) {
-                        (Some(est), dur) if dur > 0 => Some(est / dur as f64 * 1000.0),
-                        _ => None,
-                    };
-                    let err_msg = if err { error_msg.clone() } else { None };
-                    let _ = m.log_call(&crate::managers::llm_metrics::LlmCallRecord {
-                        history_id: hist_id,
-                        model_id: log_model_id,
-                        provider: log_provider_id,
-                        call_type: "intent".to_string(),
-                        input_tokens: None,
-                        output_tokens: None,
-                        total_tokens: token_count,
-                        token_estimate: token_est,
-                        duration_ms: elapsed_ms,
-                        tokens_per_sec: speed,
-                        error: err_msg,
-                        is_fallback: false, // closure cannot distinguish primary vs fallback
-                    });
-                }
-
-                if err {
-                    Err(error_msg.unwrap_or_else(|| "LLM error".into()))
-                } else {
-                    result.ok_or_else(|| "Empty result".into())
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => {
+                        log::warn!(
+                            "[SmartRouting] intent model '{}' exceeded {}s timeout",
+                            id_for_err,
+                            super::core::PER_CALL_TIMEOUT_SECS
+                        );
+                        Err(format!(
+                            "Intent model {} exceeded {}s timeout",
+                            id_for_err,
+                            super::core::PER_CALL_TIMEOUT_SECS
+                        ))
+                    }
                 }
             }
         })

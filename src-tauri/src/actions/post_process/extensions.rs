@@ -902,11 +902,32 @@ async fn execute_single_model_post_process(
                         } else {
                             req.bearer_auth(&api_key)
                         };
-                        let candidate = match req.json(&body).send().await {
-                            Ok(resp) => resp,
-                            Err(e) => {
+                        // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
+                        let send_fut = req.json(&body).send();
+                        let candidate = match tokio::time::timeout(
+                            std::time::Duration::from_secs(
+                                crate::actions::post_process::core::PER_CALL_TIMEOUT_SECS,
+                            ),
+                            send_fut,
+                        )
+                        .await
+                        {
+                            Ok(Ok(resp)) => resp,
+                            Ok(Err(e)) => {
                                 let detail = format!("LLM request failed: {:?}", e);
                                 error!("[MultiModel] {}", detail);
+                                return Err(crate::provider_gateway::AttemptError::Retryable {
+                                    status: None,
+                                    detail,
+                                    kind: crate::provider_gateway::AttemptErrorKind::Network,
+                                });
+                            }
+                            Err(_) => {
+                                let detail = format!(
+                                    "Model call exceeded {}s timeout",
+                                    crate::actions::post_process::core::PER_CALL_TIMEOUT_SECS
+                                );
+                                log::warn!("[MultiModel] {}", detail);
                                 return Err(crate::provider_gateway::AttemptError::Retryable {
                                     status: None,
                                     detail,

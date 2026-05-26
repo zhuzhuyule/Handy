@@ -220,33 +220,56 @@ pub async fn post_process_text_with_prompt(
             let extra = extra.clone();
             let app_name_c = app_name_c.clone();
             let window_title_c = window_title_c.clone();
+            let id_for_err = cached_id.clone();
             async move {
-                let (prov, remote_model) =
-                    super::routing::resolve_cached_model_to_provider_owned(&s, &cached_id)
-                        .ok_or_else(|| format!("Model {} not resolvable", cached_id))?;
-                let (result, err, error_msg, _token_count) =
-                    super::core::execute_llm_request_with_messages_silent(
-                        &app,
-                        &s,
-                        &prov,
-                        &remote_model,
-                        Some(&cached_id),
-                        &sys_msgs,
-                        user_msg.as_deref(),
-                        None,
-                        app_name_c,
-                        window_title_c,
-                        None,
-                        None,
-                        extra.as_ref(),
-                    )
-                    .await;
-                if err {
-                    Err(error_msg.unwrap_or_else(|| "LLM error".into()))
-                } else {
-                    result
-                        .map(|text| (text, remote_model))
-                        .ok_or_else(|| "Empty LLM response".into())
+                // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(super::core::PER_CALL_TIMEOUT_SECS),
+                    async move {
+                        let (prov, remote_model) =
+                            super::routing::resolve_cached_model_to_provider_owned(&s, &cached_id)
+                                .ok_or_else(|| format!("Model {} not resolvable", cached_id))?;
+                        let (result, err, error_msg, _token_count) =
+                            super::core::execute_llm_request_with_messages_silent(
+                                &app,
+                                &s,
+                                &prov,
+                                &remote_model,
+                                Some(&cached_id),
+                                &sys_msgs,
+                                user_msg.as_deref(),
+                                None,
+                                app_name_c,
+                                window_title_c,
+                                None,
+                                None,
+                                extra.as_ref(),
+                            )
+                            .await;
+                        if err {
+                            Err(error_msg.unwrap_or_else(|| "LLM error".into()))
+                        } else {
+                            result
+                                .map(|text| (text, remote_model))
+                                .ok_or_else(|| "Empty LLM response".into())
+                        }
+                    },
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => {
+                        log::warn!(
+                            "[ManualPostProcess] model '{}' exceeded {}s timeout",
+                            id_for_err,
+                            super::core::PER_CALL_TIMEOUT_SECS
+                        );
+                        Err(format!(
+                            "Model {} exceeded {}s timeout",
+                            id_for_err,
+                            super::core::PER_CALL_TIMEOUT_SECS
+                        ))
+                    }
                 }
             }
         })

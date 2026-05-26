@@ -127,6 +127,12 @@ mod extract_unsupported_param_tests {
 /// Field name for structured output JSON schema
 const TRANSCRIPTION_FIELD: &str = "transcription";
 
+/// Per-call LLM timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
+/// Each individual model call (Serial/Race/Staggered/multi-model) is capped
+/// at this duration. On timeout the call returns an Err and the fallback
+/// strategy continues with the next candidate.
+pub const PER_CALL_TIMEOUT_SECS: u64 = 5;
+
 /// Structured error type for LLM API calls.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

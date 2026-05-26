@@ -365,6 +365,19 @@ pub fn respond_rule_suggestion(
     record_decision(&conn, &app_name, &title, threshold, decision, now)
         .map_err(|e| e.to_string())?;
 
+    // Close the suggestion dialog from the backend. The frontend also calls
+    // close() but that's gated by core:window:allow-close which the
+    // rule_suggestion window's capability doesn't grant. Closing from here
+    // bypasses the permission check.
+    if let Some(window) = app.get_webview_window("rule_suggestion") {
+        if let Err(e) = window.close() {
+            log::warn!(
+                "[SuggestionEngine] failed to close rule_suggestion window: {}",
+                e
+            );
+        }
+    }
+
     Ok(())
 }
 

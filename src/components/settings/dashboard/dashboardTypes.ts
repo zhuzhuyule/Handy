@@ -5,6 +5,13 @@ export interface PostProcessStep {
   result: string;
 }
 
+export interface HistoryError {
+  stage: "polish" | "asr";
+  error_type: string;
+  detail?: string | null;
+  model?: string | null;
+}
+
 export interface HistoryEntry {
   id: number;
   file_name: string;
@@ -30,6 +37,7 @@ export interface HistoryEntry {
   token_count?: number | null;
   llm_call_count?: number | null;
   deleted: boolean;
+  error_summary?: HistoryError | null;
 }
 
 export type DashboardSelection =

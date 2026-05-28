@@ -1,4 +1,4 @@
-import { Box, Heading } from "@radix-ui/themes";
+import { Box, Flex, Heading, Switch, Text } from "@radix-ui/themes";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import React, {
@@ -33,6 +33,7 @@ export const Dashboard: React.FC = () => {
     day: toLocalYmd(new Date()),
   }));
   const audioUrlCacheRef = useRef<Map<string, string | null>>(new Map());
+  const [errorsOnly, setErrorsOnly] = useState(false);
 
   const numberFormat = useMemo(() => new Intl.NumberFormat(), []);
 
@@ -505,6 +506,20 @@ export const Dashboard: React.FC = () => {
     return Array.from(map.entries()).sort(([a], [b]) => b.localeCompare(a));
   }, [detailEntries]);
 
+  // Client-side filter: when errorsOnly is on, restrict the visible list to
+  // entries with a non-null error_summary. The summary stats above stay
+  // unaffected. Spec marks backend-side filtering as V2 work.
+  const visibleDetailEntries = useMemo(
+    () =>
+      errorsOnly
+        ? detailEntries.filter((e) => e.error_summary != null)
+        : detailEntries,
+    [detailEntries, errorsOnly],
+  );
+  const visibleDetailTotal = errorsOnly
+    ? visibleDetailEntries.length
+    : detailTotalCount;
+
   return (
     <Box className="w-full max-w-5xl mx-auto space-y-8">
       <DashboardActivityChart
@@ -515,9 +530,26 @@ export const Dashboard: React.FC = () => {
         onSelectPreset={(preset) => setSelection({ type: "preset", preset })}
       />
 
-      <Heading size="5" mb="4">
-        {selectionTitle}
-      </Heading>
+      <Flex justify="between" align="center" mb="4">
+        <Heading size="5">{selectionTitle}</Heading>
+        <Flex
+          asChild
+          gap="2"
+          align="center"
+          className="cursor-pointer select-none"
+        >
+          <label>
+            <Switch
+              size="1"
+              checked={errorsOnly}
+              onCheckedChange={setErrorsOnly}
+            />
+            <Text size="2" color="gray">
+              {t("dashboard.errorIndicator.errorsOnlyToggle")}
+            </Text>
+          </label>
+        </Flex>
+      </Flex>
       <DashboardSummaryCards
         summary={summary}
         trends={trends}
@@ -525,8 +557,8 @@ export const Dashboard: React.FC = () => {
       />
 
       <VirtualDetailsList
-        entries={detailEntries}
-        totalCount={detailTotalCount}
+        entries={visibleDetailEntries}
+        totalCount={visibleDetailTotal}
         selectedDayTotals={selectedDayTotals}
         getAudioUrl={getAudioUrl}
         onCopy={onCopy}

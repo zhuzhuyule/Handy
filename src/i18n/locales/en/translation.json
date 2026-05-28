@@ -110,6 +110,19 @@
       "today": "Today",
       "yesterday": "Yesterday"
     },
+    "errorIndicator": {
+      "errorsOnlyToggle": "Failures only",
+      "panelDetail": "Detail",
+      "panelErrorType": "Error type",
+      "panelModel": "Model",
+      "panelTimestamp": "Timestamp",
+      "stageAsr": "ASR",
+      "stagePolish": "Polish",
+      "tooltipAsrEmpty": "ASR returned empty result",
+      "tooltipPolishFailed": "Polish failed",
+      "tooltipPolishProviderError": "Polish failed ({{status}})",
+      "tooltipPolishTimeout": "Polish timed out"
+    },
     "details": {
       "audioRemoved": "Recording removed",
       "cancelled": "Cancelled",

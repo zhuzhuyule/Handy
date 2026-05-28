@@ -110,6 +110,19 @@
       "today": "今天",
       "yesterday": "昨天"
     },
+    "errorIndicator": {
+      "errorsOnlyToggle": "仅显示失败",
+      "panelDetail": "详情",
+      "panelErrorType": "错误类型",
+      "panelModel": "模型",
+      "panelTimestamp": "时间戳",
+      "stageAsr": "ASR",
+      "stagePolish": "Polish",
+      "tooltipAsrEmpty": "ASR 返回空结果",
+      "tooltipPolishFailed": "Polish 失败",
+      "tooltipPolishProviderError": "Polish 失败 ({{status}})",
+      "tooltipPolishTimeout": "Polish 超时"
+    },
     "details": {
       "audioRemoved": "录音已移除",
       "cancelled": "已取消",

@@ -8,6 +8,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import {
+  IconAlertTriangle,
   IconCopy,
   IconMicrophone,
   IconPencil,
@@ -91,6 +92,7 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
 
     const [retranscribing, setRetranscribing] = useState(false);
     const [reprocessing, setReprocessing] = useState(false);
+    const [errorPanelOpen, setErrorPanelOpen] = useState(false);
 
     // Edit dialog state
     const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -277,6 +279,27 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
       (p) => p.source !== "builtin",
     );
 
+    // Build a short, human-readable summary for the warning tooltip. The
+    // spec keeps this terse: full diagnostics live in the expanded panel.
+    const errorTooltip = useMemo(() => {
+      const err = entry.error_summary;
+      if (!err) return "";
+      if (err.stage === "asr") {
+        return t("dashboard.errorIndicator.tooltipAsrEmpty");
+      }
+      const type = err.error_type.toLowerCase();
+      if (type.includes("timeout")) {
+        return t("dashboard.errorIndicator.tooltipPolishTimeout");
+      }
+      const statusMatch = err.detail?.match(/status=?\s*(\d{3})/i);
+      if (statusMatch) {
+        return t("dashboard.errorIndicator.tooltipPolishProviderError", {
+          status: statusMatch[1],
+        });
+      }
+      return t("dashboard.errorIndicator.tooltipPolishFailed");
+    }, [entry.error_summary, t]);
+
     const activeClass = "text-logo-primary! font-medium";
 
     return (
@@ -374,146 +397,218 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
               ) : null}
             </Flex>
 
-            <Flex
-              align="center"
-              className="flex gap-2 opacity-0 group-hover/card:opacity-100 transition-opacity duration-200"
-            >
-              {retranscribing || reprocessing ? (
-                <Text size="1" color="gray" className="animate-pulse mr-2">
-                  {t("common.loading")}
-                </Text>
-              ) : null}
-
-              <DropdownMenu.Root>
-                <DropdownMenu.Trigger disabled={retranscribing || reprocessing}>
+            <Flex align="center" gap="2">
+              {entry.error_summary && (
+                <Tooltip content={errorTooltip}>
                   <IconButton
                     variant="ghost"
                     size="2"
-                    className="text-text/60 hover:text-logo-primary hover:bg-logo-primary/10 transition-colors"
+                    color="amber"
+                    onClick={() => setErrorPanelOpen((v) => !v)}
+                    aria-expanded={errorPanelOpen}
+                    aria-label={errorTooltip}
+                    className="text-amber-500 hover:bg-amber-500/10 transition-colors"
                   >
-                    <IconWand
-                      className={`w-4 h-4 ${reprocessing ? "animate-pulse" : ""}`}
-                    />
-                  </IconButton>
-                </DropdownMenu.Trigger>
-                <DropdownMenu.Content variant="soft" color="gray" size="2">
-                  {availablePrompts.map((p) => (
-                    <DropdownMenu.Item
-                      key={p.id}
-                      onClick={() => {
-                        console.log(
-                          `[UI] Clicked prompt item: ${p.name} (${p.id})`,
-                        );
-                        onReprocessClick(p.id);
-                      }}
-                      className="cursor-pointer"
-                    >
-                      <Flex align="center" gap="2" className="w-full">
-                        <DynamicIcon
-                          name={p.icon || "IconWand"}
-                          size={14}
-                          className="opacity-70"
-                        />
-                        <Text className="truncate">{p.name}</Text>
-                        {p.output_mode === "chat" && (
-                          <span className="shrink-0 text-[8px] px-1 py-0.5 rounded bg-(--accent-a3) text-(--accent-11) font-medium leading-none ml-auto">
-                            {t(
-                              "settings.postProcessing.prompts.outputMode.chat",
-                              "AI Chat",
-                            )}
-                          </span>
-                        )}
-                      </Flex>
-                    </DropdownMenu.Item>
-                  ))}
-                  {availablePrompts.length > 0 && <DropdownMenu.Separator />}
-                  <DropdownMenu.Item
-                    color="red"
-                    onClick={() => {
-                      console.log("[UI] Clicked retranscribe item");
-                      onRetranscribeClick();
-                    }}
-                    className="cursor-pointer"
-                  >
-                    {t("dashboard.actions.retranscribe")}
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>{" "}
-              </DropdownMenu.Root>
-
-              <Tooltip content={t("settings.history.copyToClipboard")}>
-                <IconButton
-                  variant="ghost"
-                  size="2"
-                  onClick={() => {
-                    let text = entry.transcription_text;
-                    if (activeTab.startsWith("step:")) {
-                      const idx = parseInt(activeTab.split(":")[1]);
-                      text =
-                        historySteps[idx]?.result ?? entry.transcription_text;
-                    } else if (activeTab === "improved") {
-                      text =
-                        entry.post_processed_text ?? entry.transcription_text;
-                    } else if (activeTab === "streaming") {
-                      text = entry.streaming_text ?? entry.transcription_text;
-                    }
-                    onCopy(text ?? "");
-                  }}
-                  className="text-text/60 hover:text-logo-primary hover:bg-logo-primary/10 transition-colors"
-                >
-                  <IconCopy className="w-4 h-4" />
-                </IconButton>
-              </Tooltip>
-
-              <Tooltip
-                content={
-                  entry.saved
-                    ? t("settings.history.unsave")
-                    : t("settings.history.save")
-                }
-              >
-                <IconButton
-                  variant="ghost"
-                  size="2"
-                  onClick={() => onToggleSaved(entry.id)}
-                  className={`transition-all duration-200 active:scale-125 ${
-                    entry.saved
-                      ? "text-orange-400 hover:text-orange-500 hover:bg-orange-400/10"
-                      : "text-text/60 hover:text-orange-400 hover:bg-orange-400/10"
-                  }`}
-                >
-                  <IconStar
-                    className={`w-4 h-4 transition-transform duration-200 ${entry.saved ? "scale-110" : ""}`}
-                    fill={entry.saved ? "currentColor" : "none"}
-                  />
-                </IconButton>
-              </Tooltip>
-
-              {entry.post_processed_text && (
-                <Tooltip content={t("dashboard.actions.rejectPolish")}>
-                  <IconButton
-                    variant="ghost"
-                    size="2"
-                    onClick={handleRejectPolish}
-                    className="text-text/60 hover:text-red-500 hover:bg-red-500/10 transition-colors"
-                  >
-                    <IconThumbDown className="w-4 h-4" />
+                    <IconAlertTriangle className="w-4 h-4" />
                   </IconButton>
                 </Tooltip>
               )}
 
-              <Tooltip content={t("settings.history.delete")}>
-                <IconButton
-                  variant="ghost"
-                  size="2"
-                  color="red"
-                  onClick={() => onDelete(entry.id)}
-                  className="text-text/60 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+              <Flex
+                align="center"
+                className="flex gap-2 opacity-0 group-hover/card:opacity-100 transition-opacity duration-200"
+              >
+                {retranscribing || reprocessing ? (
+                  <Text size="1" color="gray" className="animate-pulse mr-2">
+                    {t("common.loading")}
+                  </Text>
+                ) : null}
+
+                <DropdownMenu.Root>
+                  <DropdownMenu.Trigger
+                    disabled={retranscribing || reprocessing}
+                  >
+                    <IconButton
+                      variant="ghost"
+                      size="2"
+                      className="text-text/60 hover:text-logo-primary hover:bg-logo-primary/10 transition-colors"
+                    >
+                      <IconWand
+                        className={`w-4 h-4 ${reprocessing ? "animate-pulse" : ""}`}
+                      />
+                    </IconButton>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Content variant="soft" color="gray" size="2">
+                    {availablePrompts.map((p) => (
+                      <DropdownMenu.Item
+                        key={p.id}
+                        onClick={() => {
+                          console.log(
+                            `[UI] Clicked prompt item: ${p.name} (${p.id})`,
+                          );
+                          onReprocessClick(p.id);
+                        }}
+                        className="cursor-pointer"
+                      >
+                        <Flex align="center" gap="2" className="w-full">
+                          <DynamicIcon
+                            name={p.icon || "IconWand"}
+                            size={14}
+                            className="opacity-70"
+                          />
+                          <Text className="truncate">{p.name}</Text>
+                          {p.output_mode === "chat" && (
+                            <span className="shrink-0 text-[8px] px-1 py-0.5 rounded bg-(--accent-a3) text-(--accent-11) font-medium leading-none ml-auto">
+                              {t(
+                                "settings.postProcessing.prompts.outputMode.chat",
+                                "AI Chat",
+                              )}
+                            </span>
+                          )}
+                        </Flex>
+                      </DropdownMenu.Item>
+                    ))}
+                    {availablePrompts.length > 0 && <DropdownMenu.Separator />}
+                    <DropdownMenu.Item
+                      color="red"
+                      onClick={() => {
+                        console.log("[UI] Clicked retranscribe item");
+                        onRetranscribeClick();
+                      }}
+                      className="cursor-pointer"
+                    >
+                      {t("dashboard.actions.retranscribe")}
+                    </DropdownMenu.Item>
+                  </DropdownMenu.Content>{" "}
+                </DropdownMenu.Root>
+
+                <Tooltip content={t("settings.history.copyToClipboard")}>
+                  <IconButton
+                    variant="ghost"
+                    size="2"
+                    onClick={() => {
+                      let text = entry.transcription_text;
+                      if (activeTab.startsWith("step:")) {
+                        const idx = parseInt(activeTab.split(":")[1]);
+                        text =
+                          historySteps[idx]?.result ?? entry.transcription_text;
+                      } else if (activeTab === "improved") {
+                        text =
+                          entry.post_processed_text ?? entry.transcription_text;
+                      } else if (activeTab === "streaming") {
+                        text = entry.streaming_text ?? entry.transcription_text;
+                      }
+                      onCopy(text ?? "");
+                    }}
+                    className="text-text/60 hover:text-logo-primary hover:bg-logo-primary/10 transition-colors"
+                  >
+                    <IconCopy className="w-4 h-4" />
+                  </IconButton>
+                </Tooltip>
+
+                <Tooltip
+                  content={
+                    entry.saved
+                      ? t("settings.history.unsave")
+                      : t("settings.history.save")
+                  }
                 >
-                  <IconTrash className="w-4 h-4" />
-                </IconButton>
-              </Tooltip>
+                  <IconButton
+                    variant="ghost"
+                    size="2"
+                    onClick={() => onToggleSaved(entry.id)}
+                    className={`transition-all duration-200 active:scale-125 ${
+                      entry.saved
+                        ? "text-orange-400 hover:text-orange-500 hover:bg-orange-400/10"
+                        : "text-text/60 hover:text-orange-400 hover:bg-orange-400/10"
+                    }`}
+                  >
+                    <IconStar
+                      className={`w-4 h-4 transition-transform duration-200 ${entry.saved ? "scale-110" : ""}`}
+                      fill={entry.saved ? "currentColor" : "none"}
+                    />
+                  </IconButton>
+                </Tooltip>
+
+                {entry.post_processed_text && (
+                  <Tooltip content={t("dashboard.actions.rejectPolish")}>
+                    <IconButton
+                      variant="ghost"
+                      size="2"
+                      onClick={handleRejectPolish}
+                      className="text-text/60 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                    >
+                      <IconThumbDown className="w-4 h-4" />
+                    </IconButton>
+                  </Tooltip>
+                )}
+
+                <Tooltip content={t("settings.history.delete")}>
+                  <IconButton
+                    variant="ghost"
+                    size="2"
+                    color="red"
+                    onClick={() => onDelete(entry.id)}
+                    className="text-text/60 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                  >
+                    <IconTrash className="w-4 h-4" />
+                  </IconButton>
+                </Tooltip>
+              </Flex>
             </Flex>
           </Flex>
+
+          {entry.error_summary && errorPanelOpen && (
+            <Box className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+              <Flex direction="column" gap="2">
+                <Flex gap="2" align="center">
+                  <IconAlertTriangle className="w-4 h-4 text-amber-500" />
+                  <Text size="2" weight="medium" className="text-amber-500">
+                    {entry.error_summary.stage === "polish"
+                      ? t("dashboard.errorIndicator.stagePolish")
+                      : t("dashboard.errorIndicator.stageAsr")}
+                  </Text>
+                </Flex>
+                <Box className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                  <Text size="1" color="gray">
+                    {t("dashboard.errorIndicator.panelErrorType")}
+                  </Text>
+                  <Text size="1" className="font-mono break-all">
+                    {entry.error_summary.error_type}
+                  </Text>
+                  {entry.error_summary.detail && (
+                    <>
+                      <Text size="1" color="gray">
+                        {t("dashboard.errorIndicator.panelDetail")}
+                      </Text>
+                      <Text
+                        size="1"
+                        className="font-mono whitespace-pre-wrap break-all"
+                      >
+                        {entry.error_summary.detail}
+                      </Text>
+                    </>
+                  )}
+                  {entry.error_summary.model && (
+                    <>
+                      <Text size="1" color="gray">
+                        {t("dashboard.errorIndicator.panelModel")}
+                      </Text>
+                      <Text size="1" className="font-mono break-all">
+                        {entry.error_summary.model}
+                      </Text>
+                    </>
+                  )}
+                  <Text size="1" color="gray">
+                    {t("dashboard.errorIndicator.panelTimestamp")}
+                  </Text>
+                  <Text size="1" className="font-mono">
+                    {new Date(entry.timestamp * 1000).toLocaleString()}
+                  </Text>
+                </Box>
+              </Flex>
+            </Box>
+          )}
 
           {hasSteps || hasImprovement || hasStreaming ? (
             <Tabs.Root
@@ -786,7 +881,9 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
         nextProps.entry.transcription_text &&
       prevProps.entry.post_processed_text ===
         nextProps.entry.post_processed_text &&
-      prevProps.entry.streaming_text === nextProps.entry.streaming_text
+      prevProps.entry.streaming_text === nextProps.entry.streaming_text &&
+      prevProps.entry.error_summary?.error_type ===
+        nextProps.entry.error_summary?.error_type
     );
   },
 );

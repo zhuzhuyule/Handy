@@ -432,6 +432,35 @@ pub(crate) fn resolve_model_ref(
     }
 }
 
+/// Format a cached model id for log/error messages as
+/// `"<friendly_name> (<cached_id>)"`. Falls back to the cached id alone when
+/// settings have no matching entry. Use this anywhere a raw cached UUID would
+/// otherwise be shown to the user.
+pub(crate) fn format_model_ident(
+    settings: &crate::settings::AppSettings,
+    cached_model_id: &str,
+) -> String {
+    let r = resolve_model_ref(settings, cached_model_id);
+    if r.model_name.is_empty() || r.model_name == cached_model_id {
+        cached_model_id.to_string()
+    } else {
+        format!("{} ({})", r.model_name, cached_model_id)
+    }
+}
+
+/// Format a provider id for log/error messages as
+/// `"<label> (<provider_id>)"`. Falls back to the id alone when settings have
+/// no matching provider or the label is blank.
+pub(crate) fn format_provider_ident(
+    settings: &crate::settings::AppSettings,
+    provider_id: &str,
+) -> String {
+    match settings.post_process_provider(provider_id) {
+        Some(p) if !p.label.trim().is_empty() => format!("{} ({})", p.label, provider_id),
+        _ => provider_id.to_string(),
+    }
+}
+
 pub(crate) fn classify_http_status_for_failover(
     status: u16,
     detail: impl Into<String>,

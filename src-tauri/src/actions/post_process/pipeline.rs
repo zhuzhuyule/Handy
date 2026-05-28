@@ -512,12 +512,18 @@ async fn unified_post_process_inner(
                                 .iter()
                                 .find(|m| m.id == cached_model_id)
                                 .ok_or_else(|| {
-                                format!("Model {} not found", cached_model_id)
+                                format!(
+                                    "Model {} not found",
+                                    super::core::format_model_ident(&s, &cached_model_id)
+                                )
                             })?;
                             let provider = s
                                 .post_process_provider(&cached.provider_id)
                                 .ok_or_else(|| {
-                                    format!("Provider {} not found", cached.provider_id)
+                                    format!(
+                                        "Provider {} not found",
+                                        super::core::format_provider_ident(&s, &cached.provider_id)
+                                    )
                                 })?;
                             let model = cached.model_id.clone();
                             let log_model_id = cached.model_id.clone();
@@ -2362,7 +2368,12 @@ pub async fn maybe_post_process_transcription(
                                 super::routing::resolve_cached_model_to_provider_owned(
                                     &s, &cached_id,
                                 )
-                                .ok_or_else(|| format!("Model {} not resolvable", cached_id))?;
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Model {} not resolvable",
+                                        super::core::format_model_ident(&s, &cached_id)
+                                    )
+                                })?;
                             let (result, err, error_msg, token_count) =
                                 super::core::execute_llm_request_with_messages_silent(
                                     &app,

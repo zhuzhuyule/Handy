@@ -625,7 +625,10 @@ async fn execute_single_model_post_process(
     let provider = match settings.post_process_provider(&item.provider_id) {
         Some(p) => p,
         None => {
-            error!("[MultiModel] Provider not found: {}", item.provider_id);
+            error!(
+                "[MultiModel] Provider not found: {}",
+                super::core::format_provider_ident(settings, &item.provider_id)
+            );
             return (None, Some("Provider not found".to_string()), None);
         }
     };
@@ -924,7 +927,13 @@ async fn execute_single_model_post_process(
                             }
                             Err(_) => {
                                 let detail = format!(
-                                    "Model call exceeded {}s timeout",
+                                    "[{}/{}] 在 {}s 内未响应（超时）",
+                                    if provider.label.trim().is_empty() {
+                                        provider.id.as_str()
+                                    } else {
+                                        provider.label.as_str()
+                                    },
+                                    model,
                                     crate::actions::post_process::core::PER_CALL_TIMEOUT_SECS
                                 );
                                 log::warn!("[MultiModel] {}", detail);
@@ -1089,7 +1098,9 @@ async fn execute_single_model_post_process(
             };
             let detail = format!(
                 "Provider {} exhausted after {} attempts: {}",
-                provider_id, attempts, fallback
+                super::core::format_provider_ident(settings, &provider_id),
+                attempts,
+                fallback
             );
             (None, Some(detail), None)
         }

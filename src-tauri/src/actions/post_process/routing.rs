@@ -83,6 +83,7 @@ pub(super) async fn execute_smart_action_routing(
             let metrics = intent_metrics.clone();
             let hist_id = intent_history_id;
             let id_for_err = model_id.clone();
+            let s_for_err = s.clone();
             async move {
                 // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
                 match tokio::time::timeout(
@@ -91,7 +92,12 @@ pub(super) async fn execute_smart_action_routing(
                         let (prov, remote_model) = resolve_cached_model_to_provider_owned(
                             &s, &model_id,
                         )
-                        .ok_or_else(|| format!("Model {} not found or invalid", model_id))?;
+                        .ok_or_else(|| {
+                            format!(
+                                "Model {} not found or invalid",
+                                super::core::format_model_ident(&s, &model_id)
+                            )
+                        })?;
                         // Resolve the API model_id and provider_id for logging
                         let log_model_id = s
                             .cached_models
@@ -156,12 +162,12 @@ pub(super) async fn execute_smart_action_routing(
                     Err(_) => {
                         log::warn!(
                             "[SmartRouting] intent model '{}' exceeded {}s timeout",
-                            id_for_err,
+                            super::core::format_model_ident(&s_for_err, &id_for_err),
                             super::core::PER_CALL_TIMEOUT_SECS
                         );
                         Err(format!(
                             "Intent model {} exceeded {}s timeout",
-                            id_for_err,
+                            super::core::format_model_ident(&s_for_err, &id_for_err),
                             super::core::PER_CALL_TIMEOUT_SECS
                         ))
                     }
@@ -670,10 +676,20 @@ pub(super) async fn execute_default_polish<'a>(
                     .cached_models
                     .iter()
                     .find(|m| m.id == cached_model_id)
-                    .ok_or_else(|| format!("Model {} not found", cached_model_id))?;
+                    .ok_or_else(|| {
+                        format!(
+                            "Model {} not found",
+                            super::core::format_model_ident(&s, &cached_model_id)
+                        )
+                    })?;
                 let provider = s
                     .post_process_provider(&cached.provider_id)
-                    .ok_or_else(|| format!("Provider {} not found", cached.provider_id))?;
+                    .ok_or_else(|| {
+                        format!(
+                            "Provider {} not found",
+                            super::core::format_provider_ident(&s, &cached.provider_id)
+                        )
+                    })?;
                 let model = cached.model_id.clone();
                 let log_model_id = cached.model_id.clone();
                 let log_provider_id = provider.id.clone();
@@ -1350,10 +1366,20 @@ async fn execute_smart_polish_lite<'a>(
                     .cached_models
                     .iter()
                     .find(|m| m.id == cached_model_id)
-                    .ok_or_else(|| format!("Model {} not found", cached_model_id))?;
+                    .ok_or_else(|| {
+                        format!(
+                            "Model {} not found",
+                            super::core::format_model_ident(&s, &cached_model_id)
+                        )
+                    })?;
                 let provider = s
                     .post_process_provider(&cached.provider_id)
-                    .ok_or_else(|| format!("Provider {} not found", cached.provider_id))?;
+                    .ok_or_else(|| {
+                        format!(
+                            "Provider {} not found",
+                            super::core::format_provider_ident(&s, &cached.provider_id)
+                        )
+                    })?;
                 let model = cached.model_id.clone();
                 let log_model_id = cached.model_id.clone();
                 let log_provider_id = provider.id.clone();

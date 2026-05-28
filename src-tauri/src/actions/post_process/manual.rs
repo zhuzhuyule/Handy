@@ -220,7 +220,12 @@ pub async fn post_process_text_with_prompt(
             let extra = extra.clone();
             let app_name_c = app_name_c.clone();
             let window_title_c = window_title_c.clone();
-            let id_for_err = cached_id.clone();
+            // Resolve friendly name + provider label OUTSIDE the timeout so the
+            // timeout / not-resolvable error strings carry the human-readable id.
+            let resolved_for_err = super::core::resolve_model_ref(&s, &cached_id);
+            let friendly_for_err = resolved_for_err.model_name;
+            let provider_for_err = resolved_for_err.provider_label;
+            let cached_id_for_err = cached_id.clone();
             async move {
                 // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
                 match tokio::time::timeout(
@@ -228,7 +233,12 @@ pub async fn post_process_text_with_prompt(
                     async move {
                         let (prov, remote_model) =
                             super::routing::resolve_cached_model_to_provider_owned(&s, &cached_id)
-                                .ok_or_else(|| format!("Model {} not resolvable", cached_id))?;
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Model {} not resolvable",
+                                        super::core::format_model_ident(&s, &cached_id)
+                                    )
+                                })?;
                         let (result, err, error_msg, _token_count) =
                             super::core::execute_llm_request_with_messages_silent(
                                 &app,
@@ -260,13 +270,16 @@ pub async fn post_process_text_with_prompt(
                     Ok(r) => r,
                     Err(_) => {
                         log::warn!(
-                            "[ManualPostProcess] model '{}' exceeded {}s timeout",
-                            id_for_err,
+                            "[ManualPostProcess] model '{}' ({}) ({}) exceeded {}s timeout",
+                            friendly_for_err,
+                            provider_for_err,
+                            cached_id_for_err,
                             super::core::PER_CALL_TIMEOUT_SECS
                         );
                         Err(format!(
-                            "Model {} exceeded {}s timeout",
-                            id_for_err,
+                            "[{}/{}] 在 {}s 内未响应（超时）",
+                            provider_for_err,
+                            friendly_for_err,
                             super::core::PER_CALL_TIMEOUT_SECS
                         ))
                     }

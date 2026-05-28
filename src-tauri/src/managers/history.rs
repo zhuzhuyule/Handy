@@ -1779,39 +1779,14 @@ impl HistoryManager {
 
     pub async fn get_history_entries(&self) -> Result<Vec<HistoryEntry>> {
         let conn = self.get_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, streaming_text, streaming_asr_model, post_processed_text, post_process_prompt, post_process_prompt_id, post_process_model, duration_ms, char_count, corrected_char_count, transcription_ms, language, asr_model, app_name, window_title, post_process_history, token_count, llm_call_count, post_process_rejected, deleted FROM transcription_history ORDER BY timestamp DESC"
-        )?;
+        let sql = format!(
+            "SELECT {select} {join} ORDER BY th.timestamp DESC",
+            select = Self::HISTORY_ENTRY_SELECT,
+            join = Self::HISTORY_ENTRY_JOIN,
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
-        let rows = stmt.query_map([], |row| {
-            Ok(HistoryEntry {
-                id: row.get("id")?,
-                file_name: row.get("file_name")?,
-                timestamp: row.get("timestamp")?,
-                saved: row.get("saved")?,
-                title: row.get("title")?,
-                transcription_text: row.get("transcription_text")?,
-                streaming_text: row.get("streaming_text")?,
-                streaming_asr_model: row.get("streaming_asr_model")?,
-                post_processed_text: row.get("post_processed_text")?,
-                post_process_prompt: row.get("post_process_prompt")?,
-                post_process_prompt_id: row.get("post_process_prompt_id")?,
-                post_process_model: row.get("post_process_model")?,
-                duration_ms: row.get("duration_ms")?,
-                char_count: row.get("char_count")?,
-                corrected_char_count: row.get("corrected_char_count")?,
-                transcription_ms: row.get("transcription_ms")?,
-                language: row.get("language")?,
-                asr_model: row.get("asr_model")?,
-                app_name: row.get("app_name")?,
-                window_title: row.get("window_title")?,
-                post_process_history: row.get("post_process_history")?,
-                token_count: row.get("token_count")?,
-                llm_call_count: row.get("llm_call_count")?,
-                post_process_rejected: row.get("post_process_rejected")?,
-                deleted: row.get("deleted")?,
-            })
-        })?;
+        let rows = stmt.query_map([], Self::map_history_entry_row)?;
 
         let mut entries = Vec::new();
         for row in rows {
@@ -1912,38 +1887,13 @@ impl HistoryManager {
         let end_ts: i64 = end_local.timestamp() - 1;
 
         let conn = self.get_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, streaming_text, streaming_asr_model, post_processed_text, post_process_prompt, post_process_prompt_id, post_process_model, duration_ms, char_count, corrected_char_count, transcription_ms, language, asr_model, app_name, window_title, post_process_history, token_count, llm_call_count, post_process_rejected, deleted FROM transcription_history WHERE timestamp >= ?1 AND timestamp <= ?2 AND deleted = 0 ORDER BY timestamp ASC",
-        )?;
-        let rows = stmt.query_map(params![start_ts, end_ts], |row| {
-            Ok(HistoryEntry {
-                id: row.get("id")?,
-                file_name: row.get("file_name")?,
-                timestamp: row.get("timestamp")?,
-                saved: row.get("saved")?,
-                title: row.get("title")?,
-                transcription_text: row.get("transcription_text")?,
-                streaming_text: row.get("streaming_text")?,
-                streaming_asr_model: row.get("streaming_asr_model")?,
-                post_processed_text: row.get("post_processed_text")?,
-                post_process_prompt: row.get("post_process_prompt")?,
-                post_process_prompt_id: row.get("post_process_prompt_id")?,
-                post_process_model: row.get("post_process_model")?,
-                duration_ms: row.get("duration_ms")?,
-                char_count: row.get("char_count")?,
-                corrected_char_count: row.get("corrected_char_count")?,
-                transcription_ms: row.get("transcription_ms")?,
-                language: row.get("language")?,
-                asr_model: row.get("asr_model")?,
-                app_name: row.get("app_name")?,
-                window_title: row.get("window_title")?,
-                post_process_history: row.get("post_process_history")?,
-                token_count: row.get("token_count")?,
-                llm_call_count: row.get("llm_call_count")?,
-                post_process_rejected: row.get("post_process_rejected")?,
-                deleted: row.get("deleted")?,
-            })
-        })?;
+        let sql = format!(
+            "SELECT {select} {join} WHERE th.timestamp >= ?1 AND th.timestamp <= ?2 AND th.deleted = 0 ORDER BY th.timestamp ASC",
+            select = Self::HISTORY_ENTRY_SELECT,
+            join = Self::HISTORY_ENTRY_JOIN,
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![start_ts, end_ts], Self::map_history_entry_row)?;
         let mut entries = Vec::new();
         for r in rows {
             entries.push(r?);
@@ -1965,8 +1915,10 @@ impl HistoryManager {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, streaming_text, streaming_asr_model, post_processed_text, post_process_prompt, post_process_prompt_id, post_process_model, duration_ms, char_count, corrected_char_count, transcription_ms, language, asr_model, app_name, window_title, post_process_history, token_count, llm_call_count, post_process_rejected, deleted FROM transcription_history WHERE id IN ({}) ORDER BY id ASC",
-            placeholders
+            "SELECT {select} {join} WHERE th.id IN ({placeholders}) ORDER BY th.id ASC",
+            select = Self::HISTORY_ENTRY_SELECT,
+            join = Self::HISTORY_ENTRY_JOIN,
+            placeholders = placeholders,
         );
         let mut stmt = conn.prepare(&sql)?;
         let params_vec: Vec<Box<dyn rusqlite::ToSql>> = ids
@@ -1975,35 +1927,7 @@ impl HistoryManager {
             .collect();
         let params_refs: Vec<&dyn rusqlite::ToSql> =
             params_vec.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            Ok(HistoryEntry {
-                id: row.get("id")?,
-                file_name: row.get("file_name")?,
-                timestamp: row.get("timestamp")?,
-                saved: row.get("saved")?,
-                title: row.get("title")?,
-                transcription_text: row.get("transcription_text")?,
-                streaming_text: row.get("streaming_text")?,
-                streaming_asr_model: row.get("streaming_asr_model")?,
-                post_processed_text: row.get("post_processed_text")?,
-                post_process_prompt: row.get("post_process_prompt")?,
-                post_process_prompt_id: row.get("post_process_prompt_id")?,
-                post_process_model: row.get("post_process_model")?,
-                duration_ms: row.get("duration_ms")?,
-                char_count: row.get("char_count")?,
-                corrected_char_count: row.get("corrected_char_count")?,
-                transcription_ms: row.get("transcription_ms")?,
-                language: row.get("language")?,
-                asr_model: row.get("asr_model")?,
-                app_name: row.get("app_name")?,
-                window_title: row.get("window_title")?,
-                post_process_history: row.get("post_process_history")?,
-                token_count: row.get("token_count")?,
-                llm_call_count: row.get("llm_call_count")?,
-                post_process_rejected: row.get("post_process_rejected")?,
-                deleted: row.get("deleted")?,
-            })
-        })?;
+        let rows = stmt.query_map(params_refs.as_slice(), Self::map_history_entry_row)?;
         let mut entries = Vec::new();
         for r in rows {
             entries.push(r?);
@@ -2044,41 +1968,15 @@ impl HistoryManager {
 
     pub async fn get_entry_by_id(&self, id: i64) -> Result<Option<HistoryEntry>> {
         let conn = self.get_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, streaming_text, streaming_asr_model, post_processed_text, post_process_prompt, post_process_prompt_id, post_process_model, duration_ms, char_count, corrected_char_count, transcription_ms, language, asr_model, app_name, window_title, post_process_history, token_count, llm_call_count, post_process_rejected, deleted
-             FROM transcription_history WHERE id = ?1",
-        )?;
+        let sql = format!(
+            "SELECT {select} {join} WHERE th.id = ?1",
+            select = Self::HISTORY_ENTRY_SELECT,
+            join = Self::HISTORY_ENTRY_JOIN,
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
         let entry = stmt
-            .query_row([id], |row| {
-                Ok(HistoryEntry {
-                    id: row.get("id")?,
-                    file_name: row.get("file_name")?,
-                    timestamp: row.get("timestamp")?,
-                    saved: row.get("saved")?,
-                    title: row.get("title")?,
-                    transcription_text: row.get("transcription_text")?,
-                    streaming_text: row.get("streaming_text")?,
-                    streaming_asr_model: row.get("streaming_asr_model")?,
-                    post_processed_text: row.get("post_processed_text")?,
-                    post_process_prompt: row.get("post_process_prompt")?,
-                    post_process_prompt_id: row.get("post_process_prompt_id")?,
-                    post_process_model: row.get("post_process_model")?,
-                    duration_ms: row.get("duration_ms")?,
-                    char_count: row.get("char_count")?,
-                    corrected_char_count: row.get("corrected_char_count")?,
-                    transcription_ms: row.get("transcription_ms")?,
-                    language: row.get("language")?,
-                    asr_model: row.get("asr_model")?,
-                    app_name: row.get("app_name")?,
-                    window_title: row.get("window_title")?,
-                    post_process_history: row.get("post_process_history")?,
-                    token_count: row.get("token_count")?,
-                    llm_call_count: row.get("llm_call_count")?,
-                    post_process_rejected: row.get("post_process_rejected")?,
-                    deleted: row.get("deleted")?,
-                })
-            })
+            .query_row([id], Self::map_history_entry_row)
             .optional()?;
 
         Ok(entry)

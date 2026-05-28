@@ -461,6 +461,23 @@ pub struct PostProcessStep {
     pub result: String,
 }
 
+/// Error summary attached to a HistoryEntry. Populated by LEFT JOIN against
+/// `pipeline_decisions` + an `transcription_text=''` fallback. See
+/// docs/specs/2026-05-28-history-error-indicator.spec.md §决策.
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+pub struct HistoryError {
+    /// "polish" or "asr"
+    pub stage: String,
+    /// Raw error_type string from pipeline_decisions (e.g. "llm_timeout",
+    /// "llm_api_error") or the constant "asr_empty" for ASR fallback.
+    pub error_type: String,
+    /// Full error_detail string from pipeline_decisions, or None for asr_empty.
+    pub detail: Option<String>,
+    /// Model id captured when the error occurred (selected_model_id for polish,
+    /// asr_model for ASR), or None if unavailable.
+    pub model: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub id: i64,
@@ -488,6 +505,9 @@ pub struct HistoryEntry {
     pub llm_call_count: Option<i64>,
     pub post_process_rejected: Option<i64>,
     pub deleted: bool,
+    /// Populated from pipeline_decisions JOIN or asr_empty fallback;
+    /// null when the entry has no recorded failure.
+    pub error_summary: Option<HistoryError>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

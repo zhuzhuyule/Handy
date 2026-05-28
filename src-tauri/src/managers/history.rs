@@ -559,6 +559,116 @@ pub struct HistoryManager {
 }
 
 impl HistoryManager {
+    /// Columns selected from `transcription_history` (aliased as `th`) for the
+    /// canonical HistoryEntry shape, plus three aliased columns from the
+    /// LEFT-JOINed `pipeline_decisions` (aliased as `pd`) used to build the
+    /// optional `error_summary`. Used by every function that constructs a
+    /// `HistoryEntry`. Keep in sync with `HistoryEntry` field list.
+    const HISTORY_ENTRY_SELECT: &'static str =
+        "th.id, th.file_name, th.timestamp, th.saved, th.title, \
+        th.transcription_text, th.streaming_text, th.streaming_asr_model, \
+        th.post_processed_text, th.post_process_prompt, th.post_process_prompt_id, \
+        th.post_process_model, th.duration_ms, th.char_count, th.corrected_char_count, \
+        th.transcription_ms, th.language, th.asr_model, th.app_name, th.window_title, \
+        th.post_process_history, th.token_count, th.llm_call_count, \
+        th.post_process_rejected, th.deleted, \
+        pd.error_type AS pd_error_type, \
+        pd.error_detail AS pd_error_detail, \
+        pd.selected_model_id AS pd_selected_model_id";
+
+    /// LEFT JOIN expression to attach the latest `pipeline_decisions` row
+    /// (by `id` DESC) per `history_id`. The correlated subquery is SQLite-
+    /// portable. Combine with `HISTORY_ENTRY_SELECT`.
+    const HISTORY_ENTRY_JOIN: &'static str = "FROM transcription_history th \
+        LEFT JOIN pipeline_decisions pd \
+            ON pd.id = ( \
+                SELECT id FROM pipeline_decisions \
+                WHERE history_id = th.id \
+                ORDER BY id DESC \
+                LIMIT 1 \
+            )";
+
+    /// Build an optional `HistoryError` from the JOINed pipeline_decisions
+    /// fields and the transcription text. Priority per spec
+    /// docs/specs/2026-05-28-history-error-indicator.spec.md §决策:
+    /// 1. pipeline_decisions.error_type non-empty → polish error
+    /// 2. transcription_text empty → asr_empty
+    /// 3. otherwise → None
+    fn resolve_error_summary(
+        pd_error_type: Option<String>,
+        pd_error_detail: Option<String>,
+        pd_selected_model_id: Option<String>,
+        transcription_text: &str,
+        asr_model: Option<&str>,
+    ) -> Option<HistoryError> {
+        if let Some(et) = pd_error_type {
+            if !et.is_empty() {
+                return Some(HistoryError {
+                    stage: "polish".to_string(),
+                    error_type: et,
+                    detail: pd_error_detail,
+                    model: pd_selected_model_id,
+                });
+            }
+        }
+        if transcription_text.is_empty() {
+            return Some(HistoryError {
+                stage: "asr".to_string(),
+                error_type: "asr_empty".to_string(),
+                detail: None,
+                model: asr_model.map(String::from),
+            });
+        }
+        None
+    }
+
+    /// Read a row from a query using HISTORY_ENTRY_SELECT into a HistoryEntry.
+    /// All 5 construction sites use this. Column names must match the SELECT.
+    fn map_history_entry_row(row: &rusqlite::Row) -> rusqlite::Result<HistoryEntry> {
+        let transcription_text: String = row.get("transcription_text")?;
+        let asr_model: Option<String> = row.get("asr_model")?;
+        let pd_error_type: Option<String> = row.get("pd_error_type")?;
+        let pd_error_detail: Option<String> = row.get("pd_error_detail")?;
+        let pd_selected_model_id: Option<String> = row.get("pd_selected_model_id")?;
+
+        let error_summary = Self::resolve_error_summary(
+            pd_error_type,
+            pd_error_detail,
+            pd_selected_model_id,
+            &transcription_text,
+            asr_model.as_deref(),
+        );
+
+        Ok(HistoryEntry {
+            id: row.get("id")?,
+            file_name: row.get("file_name")?,
+            timestamp: row.get("timestamp")?,
+            saved: row.get("saved")?,
+            title: row.get("title")?,
+            transcription_text,
+            streaming_text: row.get("streaming_text")?,
+            streaming_asr_model: row.get("streaming_asr_model")?,
+            post_processed_text: row.get("post_processed_text")?,
+            post_process_prompt: row.get("post_process_prompt")?,
+            post_process_prompt_id: row.get("post_process_prompt_id")?,
+            post_process_model: row.get("post_process_model")?,
+            duration_ms: row.get("duration_ms")?,
+            char_count: row.get("char_count")?,
+            corrected_char_count: row.get("corrected_char_count")?,
+            transcription_ms: row.get("transcription_ms")?,
+            language: row.get("language")?,
+            asr_model,
+            app_name: row.get("app_name")?,
+            window_title: row.get("window_title")?,
+            post_process_history: row.get("post_process_history")?,
+            token_count: row.get("token_count")?,
+            llm_call_count: row.get("llm_call_count")?,
+            post_process_rejected: row.get("post_process_rejected")?,
+            deleted: row.get("deleted")?,
+            error_summary,
+        })
+    }
+
     pub fn new(app_handle: &AppHandle) -> Result<Self> {
         // Create recordings directory in app data dir
         let app_data_dir = app_handle.path().app_data_dir()?;
@@ -1747,52 +1857,28 @@ impl HistoryManager {
             conn.query_row(&count_sql, params_refs.as_slice(), |row| row.get(0))?
         };
 
-        // Build paginated query
+        // Build paginated query using shared SELECT + JOIN constants.
+        // The pre-existing where_clause used bare `timestamp`; after the JOIN
+        // we must qualify it as `th.timestamp`.
+        let qualified_where = where_clause.replace("timestamp", "th.timestamp");
         let query_sql = format!(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, streaming_text, streaming_asr_model, post_processed_text, post_process_prompt, post_process_prompt_id, post_process_model, duration_ms, char_count, corrected_char_count, transcription_ms, language, asr_model, app_name, window_title, post_process_history, token_count, llm_call_count, post_process_rejected, deleted FROM transcription_history {} ORDER BY timestamp DESC LIMIT {} OFFSET {}",
-            where_clause, limit, offset
+            "SELECT {select} {join} {where_} ORDER BY th.timestamp DESC LIMIT {limit} OFFSET {offset}",
+            select = Self::HISTORY_ENTRY_SELECT,
+            join = Self::HISTORY_ENTRY_JOIN,
+            where_ = qualified_where,
+            limit = limit,
+            offset = offset,
         );
 
         let mut stmt = conn.prepare(&query_sql)?;
 
-        // Helper to extract entry from row
-        let map_row = |row: &rusqlite::Row| -> rusqlite::Result<HistoryEntry> {
-            Ok(HistoryEntry {
-                id: row.get("id")?,
-                file_name: row.get("file_name")?,
-                timestamp: row.get("timestamp")?,
-                saved: row.get("saved")?,
-                title: row.get("title")?,
-                transcription_text: row.get("transcription_text")?,
-                streaming_text: row.get("streaming_text")?,
-                streaming_asr_model: row.get("streaming_asr_model")?,
-                post_processed_text: row.get("post_processed_text")?,
-                post_process_prompt: row.get("post_process_prompt")?,
-                post_process_prompt_id: row.get("post_process_prompt_id")?,
-                post_process_model: row.get("post_process_model")?,
-                duration_ms: row.get("duration_ms")?,
-                char_count: row.get("char_count")?,
-                corrected_char_count: row.get("corrected_char_count")?,
-                transcription_ms: row.get("transcription_ms")?,
-                language: row.get("language")?,
-                asr_model: row.get("asr_model")?,
-                app_name: row.get("app_name")?,
-                window_title: row.get("window_title")?,
-                post_process_history: row.get("post_process_history")?,
-                token_count: row.get("token_count")?,
-                llm_call_count: row.get("llm_call_count")?,
-                post_process_rejected: row.get("post_process_rejected")?,
-                deleted: row.get("deleted")?,
-            })
-        };
-
         let entries: Vec<HistoryEntry> = if params_vec.is_empty() {
-            stmt.query_map([], map_row)?
+            stmt.query_map([], Self::map_history_entry_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             let params_refs: Vec<&dyn rusqlite::ToSql> =
                 params_vec.iter().map(|p| p.as_ref()).collect();
-            stmt.query_map(params_refs.as_slice(), map_row)?
+            stmt.query_map(params_refs.as_slice(), Self::map_history_entry_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
 

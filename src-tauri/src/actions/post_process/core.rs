@@ -130,8 +130,10 @@ const TRANSCRIPTION_FIELD: &str = "transcription";
 /// Per-call LLM timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
 /// Each individual model call (Serial/Race/Staggered/multi-model) is capped
 /// at this duration. On timeout the call returns an Err and the fallback
-/// strategy continues with the next candidate.
-pub const PER_CALL_TIMEOUT_SECS: u64 = 5;
+/// strategy continues with the next candidate. The clock starts when the LLM
+/// request is initiated (including connect + body wait) and stops when the
+/// response is fully received or this ceiling fires.
+pub const PER_CALL_TIMEOUT_SECS: u64 = 10;
 
 /// Structured error type for LLM API calls.
 #[derive(Debug, Clone)]

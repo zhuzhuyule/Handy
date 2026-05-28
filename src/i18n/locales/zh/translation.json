@@ -123,9 +123,9 @@
         "llm_network_error": "网络错误",
         "llm_parse_error": "响应解析失败",
         "llm_rate_limited": "速率限制 (429)",
-        "llm_timeout": "超时 (5s)",
+        "llm_timeout": "超时 (10s)",
         "llm_unknown": "未知 LLM 错误",
-        "pipeline_timeout": "流水线超时 (10s)"
+        "pipeline_timeout": "流水线超时 (20s)"
       },
       "errorsOnlyToggle": "仅显示失败",
       "panelDetail": "详情",

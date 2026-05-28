@@ -18,7 +18,9 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Returns `PipelineResult` — caller handles all UI (review window, paste, history).
 /// Pipeline timeout (per spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
 /// On exceed, the whole pipeline returns ASR original text as PassThrough.
-const PIPELINE_TIMEOUT_SECS: u64 = 10;
+/// Budget = primary call (PER_CALL_TIMEOUT_SECS) + one fallback retry, so this
+/// must be at least 2 × PER_CALL_TIMEOUT_SECS.
+const PIPELINE_TIMEOUT_SECS: u64 = 20;
 
 pub async fn unified_post_process(
     app_handle: &AppHandle,

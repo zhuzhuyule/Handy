@@ -123,9 +123,9 @@
         "llm_network_error": "Network error",
         "llm_parse_error": "Response parse failed",
         "llm_rate_limited": "Rate limited (429)",
-        "llm_timeout": "Timeout (5s)",
+        "llm_timeout": "Timeout (10s)",
         "llm_unknown": "Unknown LLM error",
-        "pipeline_timeout": "Pipeline timeout (10s)"
+        "pipeline_timeout": "Pipeline timeout (20s)"
       },
       "errorsOnlyToggle": "Failures only",
       "panelDetail": "Detail",

@@ -452,77 +452,101 @@ async fn unified_post_process_inner(
                 let an = an.clone();
                 let wt = wt.clone();
                 let metrics = metrics.clone();
+                let id_for_err = cached_model_id.clone();
                 async move {
-                    let cached = s
-                        .cached_models
-                        .iter()
-                        .find(|m| m.id == cached_model_id)
-                        .ok_or_else(|| format!("Model {} not found", cached_model_id))?;
-                    let provider = s
-                        .post_process_provider(&cached.provider_id)
-                        .ok_or_else(|| format!("Provider {} not found", cached.provider_id))?;
-                    let model = cached.model_id.clone();
-                    let log_model_id = cached.model_id.clone();
-                    let log_provider_id = provider.id.clone();
+                    // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(super::core::PER_CALL_TIMEOUT_SECS),
+                        async move {
+                            let cached = s
+                                .cached_models
+                                .iter()
+                                .find(|m| m.id == cached_model_id)
+                                .ok_or_else(|| {
+                                format!("Model {} not found", cached_model_id)
+                            })?;
+                            let provider = s
+                                .post_process_provider(&cached.provider_id)
+                                .ok_or_else(|| {
+                                    format!("Provider {} not found", cached.provider_id)
+                                })?;
+                            let model = cached.model_id.clone();
+                            let log_model_id = cached.model_id.clone();
+                            let log_provider_id = provider.id.clone();
 
-                    let call_start = std::time::Instant::now();
-                    let (result, err, error_msg, token_count) =
-                        super::core::execute_llm_request_with_messages(
-                            &app,
-                            &s,
-                            provider,
-                            &model,
-                            Some(&cached_model_id),
-                            &sys_msgs,
-                            user_msg.as_deref(),
-                            None,
-                            an,
-                            wt,
-                            None,
-                            None,
-                            None,
-                        )
-                        .await;
-                    let elapsed_ms = call_start.elapsed().as_millis() as u64;
+                            let call_start = std::time::Instant::now();
+                            let (result, err, error_msg, token_count) =
+                                super::core::execute_llm_request_with_messages(
+                                    &app,
+                                    &s,
+                                    provider,
+                                    &model,
+                                    Some(&cached_model_id),
+                                    &sys_msgs,
+                                    user_msg.as_deref(),
+                                    None,
+                                    an,
+                                    wt,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await;
+                            let elapsed_ms = call_start.elapsed().as_millis() as u64;
 
-                    // Self-log metrics
-                    if let Some(ref m) = metrics {
-                        let tokens_per_sec = match (&result, elapsed_ms) {
-                            (Some(ref t), d) if d > 0 => {
-                                let est = super::extensions::estimate_tokens(t);
-                                Some(est / d as f64 * 1000.0)
+                            // Self-log metrics
+                            if let Some(ref m) = metrics {
+                                let tokens_per_sec = match (&result, elapsed_ms) {
+                                    (Some(ref t), d) if d > 0 => {
+                                        let est = super::extensions::estimate_tokens(t);
+                                        Some(est / d as f64 * 1000.0)
+                                    }
+                                    _ => None,
+                                };
+                                let _ = m.log_call(&crate::managers::llm_metrics::LlmCallRecord {
+                                    history_id: hist_id,
+                                    model_id: log_model_id.clone(),
+                                    provider: log_provider_id.clone(),
+                                    call_type: "single_polish".to_string(),
+                                    input_tokens: None,
+                                    output_tokens: None,
+                                    total_tokens: token_count,
+                                    token_estimate: None,
+                                    duration_ms: elapsed_ms as i64,
+                                    tokens_per_sec,
+                                    error: if err { error_msg.clone() } else { None },
+                                    is_fallback: false,
+                                });
                             }
-                            _ => None,
-                        };
-                        let _ = m.log_call(&crate::managers::llm_metrics::LlmCallRecord {
-                            history_id: hist_id,
-                            model_id: log_model_id.clone(),
-                            provider: log_provider_id.clone(),
-                            call_type: "single_polish".to_string(),
-                            input_tokens: None,
-                            output_tokens: None,
-                            total_tokens: token_count,
-                            token_estimate: None,
-                            duration_ms: elapsed_ms as i64,
-                            tokens_per_sec,
-                            error: if err { error_msg.clone() } else { None },
-                            is_fallback: false,
-                        });
-                    }
 
-                    if err {
-                        Err(error_msg.unwrap_or_else(|| "LLM error".into()))
-                    } else {
-                        result
-                            .map(|text| (text, token_count, log_model_id, log_provider_id))
-                            .ok_or_else(|| "Empty result".into())
+                            if err {
+                                Err(error_msg.unwrap_or_else(|| "LLM error".into()))
+                            } else {
+                                result
+                                    .map(|text| (text, token_count, log_model_id, log_provider_id))
+                                    .ok_or_else(|| "Empty result".into())
+                            }
+                        },
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => {
+                            log::warn!(
+                                "[UnifiedPipeline] LitePolish model '{}' exceeded {}s timeout",
+                                id_for_err,
+                                super::core::PER_CALL_TIMEOUT_SECS
+                            );
+                            Err(format!(
+                                "Model {} exceeded {}s timeout",
+                                id_for_err,
+                                super::core::PER_CALL_TIMEOUT_SECS
+                            ))
+                        }
                     }
                 }
             })
             .await;
-
-            // Each individual LLM call inside the fallback chain is protected
-            // by the 10s timeout in execute_llm_request_with_messages.
 
             if fb_result.is_fallback {
                 info!(
@@ -2235,34 +2259,59 @@ pub async fn maybe_post_process_transcription(
                 let app_name_c = app_name_c.clone();
                 let window_title_c = window_title_c.clone();
                 let match_pattern_c = match_pattern_c.clone();
+                let id_for_err = cached_id.clone();
                 async move {
-                    let (prov, remote_model) =
-                        super::routing::resolve_cached_model_to_provider_owned(&s, &cached_id)
-                            .ok_or_else(|| format!("Model {} not resolvable", cached_id))?;
-                    let (result, err, error_msg, token_count) =
-                        super::core::execute_llm_request_with_messages_silent(
-                            &app,
-                            &s,
-                            &prov,
-                            &remote_model,
-                            Some(&cached_id),
-                            &sys_msgs,
-                            user_msg.as_deref(),
-                            None,
-                            app_name_c,
-                            window_title_c,
-                            match_pattern_c,
-                            match_type_c,
-                            extra.as_ref(),
-                        )
-                        .await;
-                    if err {
-                        Err(error_msg.unwrap_or_else(|| "LLM error".into()))
-                    } else {
-                        let prov_id = prov.id.clone();
-                        result
-                            .map(|text| (text, token_count, prov_id, remote_model))
-                            .ok_or_else(|| "Empty LLM response".into())
+                    // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(super::core::PER_CALL_TIMEOUT_SECS),
+                        async move {
+                            let (prov, remote_model) =
+                                super::routing::resolve_cached_model_to_provider_owned(
+                                    &s, &cached_id,
+                                )
+                                .ok_or_else(|| format!("Model {} not resolvable", cached_id))?;
+                            let (result, err, error_msg, token_count) =
+                                super::core::execute_llm_request_with_messages_silent(
+                                    &app,
+                                    &s,
+                                    &prov,
+                                    &remote_model,
+                                    Some(&cached_id),
+                                    &sys_msgs,
+                                    user_msg.as_deref(),
+                                    None,
+                                    app_name_c,
+                                    window_title_c,
+                                    match_pattern_c,
+                                    match_type_c,
+                                    extra.as_ref(),
+                                )
+                                .await;
+                            if err {
+                                Err(error_msg.unwrap_or_else(|| "LLM error".into()))
+                            } else {
+                                let prov_id = prov.id.clone();
+                                result
+                                    .map(|text| (text, token_count, prov_id, remote_model))
+                                    .ok_or_else(|| "Empty LLM response".into())
+                            }
+                        },
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => {
+                            log::warn!(
+                                "[PostProcess] model '{}' exceeded {}s timeout",
+                                id_for_err,
+                                super::core::PER_CALL_TIMEOUT_SECS
+                            );
+                            Err(format!(
+                                "Model {} exceeded {}s timeout",
+                                id_for_err,
+                                super::core::PER_CALL_TIMEOUT_SECS
+                            ))
+                        }
                     }
                 }
             })

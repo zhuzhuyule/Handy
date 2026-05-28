@@ -39,6 +39,9 @@ pub async fn unified_post_process(
     cursor_context: Option<crate::clipboard::CursorContext>,
 ) -> super::PipelineResult {
     let original_text = transcription.to_string();
+    // Retain a copy for the ceiling-timeout log row below; the inner future
+    // consumes the original.
+    let app_name_for_timeout_log = app_name.clone();
     match tokio::time::timeout(
         std::time::Duration::from_secs(PIPELINE_TIMEOUT_SECS),
         unified_post_process_inner(
@@ -68,6 +71,28 @@ pub async fn unified_post_process(
                 "[UnifiedPipeline] exceeded {}s ceiling — falling back to PassThrough",
                 PIPELINE_TIMEOUT_SECS
             );
+            // The inner future is dropped here so it never logs its own
+            // pipeline_decisions row. Write a minimal one so the History UI
+            // can surface "pipeline timed out" instead of going silent.
+            if let Some(manager) =
+                app_handle.try_state::<Arc<crate::managers::pipeline_log::PipelineLogManager>>()
+            {
+                let record = crate::managers::pipeline_log::PipelineDecisionRecord {
+                    history_id,
+                    input_length: original_text.chars().count() as u32,
+                    app_name: app_name_for_timeout_log,
+                    smart_routing_enabled: settings.smart_routing_enabled,
+                    result_type: "PipelineTimeout".to_string(),
+                    total_elapsed_ms: PIPELINE_TIMEOUT_SECS * 1000,
+                    error_type: Some("pipeline_timeout".to_string()),
+                    error_detail: Some(format!(
+                        "Pipeline exceeded {}s ceiling",
+                        PIPELINE_TIMEOUT_SECS
+                    )),
+                    ..Default::default()
+                };
+                manager.log_decision(&record);
+            }
             super::PipelineResult::PassThrough {
                 text: original_text,
                 intent_token_count: None,
@@ -625,6 +650,9 @@ async fn unified_post_process_inner(
         decision.result_type = "SingleModel".to_string();
         decision.total_elapsed_ms = pipeline_start.elapsed().as_millis() as u64;
         if err {
+            if let Some(ref msg) = error_message {
+                decision.error_type = Some(classify_error_message(msg).to_string());
+            }
             decision.error_detail = error_message.clone();
         }
         log_pipeline_decision(app_handle, &decision);
@@ -812,9 +840,13 @@ async fn unified_post_process_inner(
     }
 
     decision.model_selection = Some("full".to_string());
+    decision.selected_model_id = model.clone();
     decision.result_type = "SingleModel".to_string();
     decision.total_elapsed_ms = pipeline_start.elapsed().as_millis() as u64;
     if err {
+        if let Some(ref msg) = error_message {
+            decision.error_type = Some(classify_error_message(msg).to_string());
+        }
         decision.error_detail = error_message.clone();
     }
     log_pipeline_decision(app_handle, &decision);
@@ -2464,6 +2496,51 @@ pub async fn maybe_post_process_transcription(
 ///
 /// Catches:
 /// - Consecutive identical characters: "啊啊啊", "嗯嗯", "呃呃"
+/// Map the freeform error string produced by the legacy polish call paths
+/// (LlmError::message(), per-call timeout wrappers, fallback exhaustion) to a
+/// stable `error_type` code. The History UI uses this code to render a tooltip
+/// and detail panel, so the codes must stay stable.
+pub(super) fn classify_error_message(msg: &str) -> &'static str {
+    let lower = msg.to_lowercase();
+    // Per-call timeout wrappers in pipeline.rs / routing.rs / extensions.rs all
+    // emit "Model <id> exceeded <N>s timeout".
+    if lower.contains("exceeded") && lower.contains("timeout") {
+        return "llm_timeout";
+    }
+    // LlmError::message() encodes status as `status=<code>`.
+    if let Some(idx) = lower.find("status=") {
+        let rest = &lower[idx + "status=".len()..];
+        let code: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        return match code.as_str() {
+            "401" | "403" => "llm_auth_failed",
+            "404" => "llm_model_not_found",
+            "429" => "llm_rate_limited",
+            "400" => "llm_bad_request",
+            c if c.len() == 3 => "llm_api_error",
+            _ => "llm_api_error",
+        };
+    }
+    if lower.contains("网络请求失败") || lower.contains("network") || lower.contains("connection")
+    {
+        return "llm_network_error";
+    }
+    if lower.contains("客户端初始化失败") || lower.contains("client init") {
+        return "llm_init_failed";
+    }
+    if lower.contains("响应解析失败") || lower.contains("parse") {
+        return "llm_parse_error";
+    }
+    if lower.contains("empty result") || lower.contains("empty llm response") {
+        return "llm_empty_result";
+    }
+    if lower.contains("not found") || lower.contains("not resolvable") {
+        return "llm_config_error";
+    }
+    "llm_unknown"
+}
+
+/// Detects common repetition patterns in text that indicate stuttering or filler sounds.
+/// Triggers when text contains:
 /// - Repeated word patterns (ABAB): "好的好的", "对对对"
 /// - Repeated filler sounds: "um um", "uh uh"
 pub(super) fn has_repetition_pattern(text: &str) -> bool {

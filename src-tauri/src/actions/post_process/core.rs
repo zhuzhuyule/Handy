@@ -384,6 +384,54 @@ async fn parse_successful_chat_response(
     Ok(LlmResponse { text, token_count })
 }
 
+/// Resolved identifiers for a cached model lookup. `model_name` is the remote
+/// model name (e.g. "Qwen3-Max"). `provider_id` is the canonical provider id used
+/// for storage and analytics. `provider_label` is the user-facing display name
+/// (falls back to id when label is empty), used in human-readable error text.
+pub(crate) struct ResolvedModelRef {
+    pub model_name: String,
+    pub provider_id: String,
+    pub provider_label: String,
+}
+
+/// Resolve a cached_model_id (local UUID) to a friendly model name, the provider
+/// id, and the provider label. Falls back to the UUID itself and empty
+/// provider when settings are stale (e.g. the model was deleted).
+pub(crate) fn resolve_model_ref(
+    settings: &crate::settings::AppSettings,
+    cached_model_id: &str,
+) -> ResolvedModelRef {
+    match settings
+        .cached_models
+        .iter()
+        .find(|m| m.id == cached_model_id)
+    {
+        Some(cached) => {
+            let (provider_id, provider_label) = settings
+                .post_process_provider(&cached.provider_id)
+                .map(|p| {
+                    let label = if p.label.trim().is_empty() {
+                        p.id.clone()
+                    } else {
+                        p.label.clone()
+                    };
+                    (p.id.clone(), label)
+                })
+                .unwrap_or_else(|| (cached.provider_id.clone(), cached.provider_id.clone()));
+            ResolvedModelRef {
+                model_name: cached.model_id.clone(),
+                provider_id,
+                provider_label,
+            }
+        }
+        None => ResolvedModelRef {
+            model_name: cached_model_id.to_string(),
+            provider_id: String::new(),
+            provider_label: String::new(),
+        },
+    }
+}
+
 pub(crate) fn classify_http_status_for_failover(
     status: u16,
     detail: impl Into<String>,

@@ -111,10 +111,27 @@
       "yesterday": "Yesterday"
     },
     "errorIndicator": {
+      "errorTypeLabel": {
+        "asr_empty": "ASR empty result",
+        "llm_api_error": "Provider returned error",
+        "llm_auth_failed": "Authentication failed",
+        "llm_bad_request": "Bad request",
+        "llm_config_error": "Model/provider config error",
+        "llm_empty_result": "Empty response",
+        "llm_init_failed": "Client init failed",
+        "llm_model_not_found": "Model not found (404)",
+        "llm_network_error": "Network error",
+        "llm_parse_error": "Response parse failed",
+        "llm_rate_limited": "Rate limited (429)",
+        "llm_timeout": "Timeout (5s)",
+        "llm_unknown": "Unknown LLM error",
+        "pipeline_timeout": "Pipeline timeout (10s)"
+      },
       "errorsOnlyToggle": "Failures only",
       "panelDetail": "Detail",
       "panelErrorType": "Error type",
       "panelModel": "Model",
+      "panelProvider": "Provider",
       "panelTimestamp": "Timestamp",
       "stageAsr": "ASR",
       "stagePolish": "Polish",

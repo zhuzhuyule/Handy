@@ -451,6 +451,8 @@ static MIGRATIONS: &[M] = &[
     M::up(crate::managers::cluster_feedback::MIGRATION_SQL),
     // Migration 47: app_rule_suggestions table for suggestion engine
     M::up(crate::managers::suggestion_engine::MIGRATION_SQL),
+    // Migration 48: Add selected_provider_id for richer History error indicator
+    M::up("ALTER TABLE pipeline_decisions ADD COLUMN selected_provider_id TEXT;"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -473,9 +475,13 @@ pub struct HistoryError {
     pub error_type: String,
     /// Full error_detail string from pipeline_decisions, or None for asr_empty.
     pub detail: Option<String>,
-    /// Model id captured when the error occurred (selected_model_id for polish,
-    /// asr_model for ASR), or None if unavailable.
+    /// Friendly model name captured when the error occurred (selected_model_id for
+    /// polish, asr_model for ASR). For polish this is the remote model name
+    /// (e.g., "Qwen3-Max"), NOT the local cached UUID.
     pub model: Option<String>,
+    /// Provider id captured when the polish error occurred. Frontend looks up the
+    /// provider's display name in settings. None for asr stage.
+    pub provider: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -574,7 +580,8 @@ impl HistoryManager {
         th.post_process_rejected, th.deleted, \
         pd.error_type AS pd_error_type, \
         pd.error_detail AS pd_error_detail, \
-        pd.selected_model_id AS pd_selected_model_id";
+        pd.selected_model_id AS pd_selected_model_id, \
+        pd.selected_provider_id AS pd_selected_provider_id";
 
     /// LEFT JOIN expression to attach the latest `pipeline_decisions` row
     /// (by `id` DESC) per `history_id`. The correlated subquery is SQLite-
@@ -598,6 +605,7 @@ impl HistoryManager {
         pd_error_type: Option<String>,
         pd_error_detail: Option<String>,
         pd_selected_model_id: Option<String>,
+        pd_selected_provider_id: Option<String>,
         transcription_text: &str,
         asr_model: Option<&str>,
     ) -> Option<HistoryError> {
@@ -608,6 +616,7 @@ impl HistoryManager {
                     error_type: et,
                     detail: pd_error_detail,
                     model: pd_selected_model_id,
+                    provider: pd_selected_provider_id,
                 });
             }
         }
@@ -617,6 +626,7 @@ impl HistoryManager {
                 error_type: "asr_empty".to_string(),
                 detail: None,
                 model: asr_model.map(String::from),
+                provider: None,
             });
         }
         None
@@ -630,11 +640,13 @@ impl HistoryManager {
         let pd_error_type: Option<String> = row.get("pd_error_type")?;
         let pd_error_detail: Option<String> = row.get("pd_error_detail")?;
         let pd_selected_model_id: Option<String> = row.get("pd_selected_model_id")?;
+        let pd_selected_provider_id: Option<String> = row.get("pd_selected_provider_id")?;
 
         let error_summary = Self::resolve_error_summary(
             pd_error_type,
             pd_error_detail,
             pd_selected_model_id,
+            pd_selected_provider_id,
             &transcription_text,
             asr_model.as_deref(),
         );

@@ -10,6 +10,7 @@ export interface HistoryError {
   error_type: string;
   detail?: string | null;
   model?: string | null;
+  provider?: string | null;
 }
 
 export interface HistoryEntry {

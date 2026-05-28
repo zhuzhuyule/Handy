@@ -77,6 +77,16 @@ pub async fn unified_post_process(
             if let Some(manager) =
                 app_handle.try_state::<Arc<crate::managers::pipeline_log::PipelineLogManager>>()
             {
+                // We don't know which step was running when the ceiling fired,
+                // so attribute the timeout to the configured primary polish model.
+                let (timeout_model, timeout_provider) = settings
+                    .selected_prompt_model
+                    .as_ref()
+                    .map(|c| {
+                        let r = super::core::resolve_model_ref(settings, &c.primary_id);
+                        (r.model_name, r.provider_id)
+                    })
+                    .unwrap_or_default();
                 let record = crate::managers::pipeline_log::PipelineDecisionRecord {
                     history_id,
                     input_length: original_text.chars().count() as u32,
@@ -84,6 +94,16 @@ pub async fn unified_post_process(
                     smart_routing_enabled: settings.smart_routing_enabled,
                     result_type: "PipelineTimeout".to_string(),
                     total_elapsed_ms: PIPELINE_TIMEOUT_SECS * 1000,
+                    selected_model_id: if timeout_model.is_empty() {
+                        None
+                    } else {
+                        Some(timeout_model)
+                    },
+                    selected_provider_id: if timeout_provider.is_empty() {
+                        None
+                    } else {
+                        Some(timeout_provider)
+                    },
                     error_type: Some("pipeline_timeout".to_string()),
                     error_detail: Some(format!(
                         "Pipeline exceeded {}s ceiling",
@@ -477,7 +497,11 @@ async fn unified_post_process_inner(
                 let an = an.clone();
                 let wt = wt.clone();
                 let metrics = metrics.clone();
-                let id_for_err = cached_model_id.clone();
+                // Resolve friendly name + provider name OUTSIDE the timeout so the
+                // timeout error string is human-readable instead of echoing the UUID.
+                let resolved_for_err = super::core::resolve_model_ref(&s, &cached_model_id);
+                let friendly_for_err = resolved_for_err.model_name;
+                let provider_for_err = resolved_for_err.provider_label;
                 async move {
                     // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
                     match tokio::time::timeout(
@@ -558,13 +582,15 @@ async fn unified_post_process_inner(
                         Ok(r) => r,
                         Err(_) => {
                             log::warn!(
-                                "[UnifiedPipeline] LitePolish model '{}' exceeded {}s timeout",
-                                id_for_err,
+                                "[UnifiedPipeline] LitePolish model '{}' ({}) exceeded {}s timeout",
+                                friendly_for_err,
+                                provider_for_err,
                                 super::core::PER_CALL_TIMEOUT_SECS
                             );
                             Err(format!(
-                                "Model {} exceeded {}s timeout",
-                                id_for_err,
+                                "[{}/{}] 在 {}s 内未响应（超时）",
+                                provider_for_err,
+                                friendly_for_err,
                                 super::core::PER_CALL_TIMEOUT_SECS
                             ))
                         }
@@ -646,7 +672,25 @@ async fn unified_post_process_inner(
             super::recent_context::push(text, an);
         }
         decision.model_selection = Some("lite".to_string());
-        decision.selected_model_id = Some(result_model.clone());
+        // result_model / result_provider come back empty when the LitePolish
+        // fallback chain failed end-to-end; recover by resolving the chain's
+        // primary cached id so the History UI can still name the culprit.
+        let (logged_model, logged_provider) = if result_model.is_empty() {
+            lite_settings
+                .selected_prompt_model
+                .as_ref()
+                .map(|c| {
+                    let r = super::core::resolve_model_ref(&lite_settings, &c.primary_id);
+                    (r.model_name, r.provider_id)
+                })
+                .unwrap_or_default()
+        } else {
+            (result_model.clone(), result_provider.clone())
+        };
+        decision.selected_model_id = Some(logged_model.clone());
+        if !logged_provider.is_empty() {
+            decision.selected_provider_id = Some(logged_provider.clone());
+        }
         decision.result_type = "SingleModel".to_string();
         decision.total_elapsed_ms = pipeline_start.elapsed().as_millis() as u64;
         if err {
@@ -841,6 +885,19 @@ async fn unified_post_process_inner(
 
     decision.model_selection = Some("full".to_string());
     decision.selected_model_id = model.clone();
+    // metrics_provider_id holds the canonical provider id. Fall back to the
+    // chain's primary id resolution when metrics are absent (e.g., end-to-end
+    // failure). Frontend resolves id → label via settings.
+    decision.selected_provider_id = metrics_provider_id.clone().or_else(|| {
+        settings_ref
+            .selected_prompt_model
+            .as_ref()
+            .map(|c| {
+                let r = super::core::resolve_model_ref(settings_ref, &c.primary_id);
+                r.provider_id
+            })
+            .filter(|s| !s.is_empty())
+    });
     decision.result_type = "SingleModel".to_string();
     decision.total_elapsed_ms = pipeline_start.elapsed().as_millis() as u64;
     if err {
@@ -2291,7 +2348,11 @@ pub async fn maybe_post_process_transcription(
                 let app_name_c = app_name_c.clone();
                 let window_title_c = window_title_c.clone();
                 let match_pattern_c = match_pattern_c.clone();
-                let id_for_err = cached_id.clone();
+                // Resolve friendly name + provider name OUTSIDE the timeout so
+                // the timeout error string is human-readable.
+                let resolved_for_err = super::core::resolve_model_ref(&s, &cached_id);
+                let friendly_for_err = resolved_for_err.model_name;
+                let provider_for_err = resolved_for_err.provider_label;
                 async move {
                     // Per-call 5s timeout (spec docs/specs/2026-05-26-polish-pipeline-timeout.spec.md).
                     match tokio::time::timeout(
@@ -2334,13 +2395,15 @@ pub async fn maybe_post_process_transcription(
                         Ok(r) => r,
                         Err(_) => {
                             log::warn!(
-                                "[PostProcess] model '{}' exceeded {}s timeout",
-                                id_for_err,
+                                "[PostProcess] model '{}' ({}) exceeded {}s timeout",
+                                friendly_for_err,
+                                provider_for_err,
                                 super::core::PER_CALL_TIMEOUT_SECS
                             );
                             Err(format!(
-                                "Model {} exceeded {}s timeout",
-                                id_for_err,
+                                "[{}/{}] 在 {}s 内未响应（超时）",
+                                provider_for_err,
+                                friendly_for_err,
                                 super::core::PER_CALL_TIMEOUT_SECS
                             ))
                         }

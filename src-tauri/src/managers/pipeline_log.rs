@@ -27,6 +27,7 @@ pub struct PipelineDecisionRecord {
     // Step 3
     pub model_selection: Option<String>,
     pub selected_model_id: Option<String>,
+    pub selected_provider_id: Option<String>,
     pub is_multi_model: bool,
 
     // Step 4
@@ -74,14 +75,15 @@ impl PipelineLogManager {
                 intent_action, intent_needs_hotword, intent_language,
                 intent_model_id, intent_provider_id, intent_elapsed_ms,
                 intent_overridden, intent_override_reason,
-                model_selection, selected_model_id, is_multi_model,
+                model_selection, selected_model_id, selected_provider_id,
+                is_multi_model,
                 result_type, total_elapsed_ms, error_type, error_detail,
                 app_name, smart_routing_enabled, bypass_reason,
                 has_cursor_context
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                ?21, ?22, ?23, ?24
+                ?21, ?22, ?23, ?24, ?25
             )",
             params![
                 r.history_id,
@@ -99,6 +101,7 @@ impl PipelineLogManager {
                 r.intent_override_reason,
                 r.model_selection,
                 r.selected_model_id,
+                r.selected_provider_id,
                 r.is_multi_model,
                 r.result_type,
                 r.total_elapsed_ms,

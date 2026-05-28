@@ -573,19 +573,26 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
                   <Text size="1" color="gray">
                     {t("dashboard.errorIndicator.panelErrorType")}
                   </Text>
-                  <Text size="1" className="font-mono break-all">
-                    {entry.error_summary.error_type}
+                  <Text size="1">
+                    {t(
+                      `dashboard.errorIndicator.errorTypeLabel.${entry.error_summary.error_type}`,
+                      {
+                        defaultValue: entry.error_summary.error_type,
+                      },
+                    )}
+                    <Text size="1" color="gray" className="ml-2 font-mono">
+                      ({entry.error_summary.error_type})
+                    </Text>
                   </Text>
-                  {entry.error_summary.detail && (
+                  {entry.error_summary.provider && (
                     <>
                       <Text size="1" color="gray">
-                        {t("dashboard.errorIndicator.panelDetail")}
+                        {t("dashboard.errorIndicator.panelProvider")}
                       </Text>
-                      <Text
-                        size="1"
-                        className="font-mono whitespace-pre-wrap break-all"
-                      >
-                        {entry.error_summary.detail}
+                      <Text size="1" className="break-all">
+                        {settings?.post_process_providers?.find(
+                          (p) => p.id === entry.error_summary?.provider,
+                        )?.label || entry.error_summary.provider}
                       </Text>
                     </>
                   )}
@@ -596,6 +603,19 @@ export const DashboardEntryCard = React.memo<DashboardEntryCardProps>(
                       </Text>
                       <Text size="1" className="font-mono break-all">
                         {entry.error_summary.model}
+                      </Text>
+                    </>
+                  )}
+                  {entry.error_summary.detail && (
+                    <>
+                      <Text size="1" color="gray">
+                        {t("dashboard.errorIndicator.panelDetail")}
+                      </Text>
+                      <Text
+                        size="1"
+                        className="font-mono whitespace-pre-wrap break-all"
+                      >
+                        {entry.error_summary.detail}
                       </Text>
                     </>
                   )}

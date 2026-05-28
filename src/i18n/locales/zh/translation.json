@@ -111,10 +111,27 @@
       "yesterday": "昨天"
     },
     "errorIndicator": {
+      "errorTypeLabel": {
+        "asr_empty": "ASR 返回空",
+        "llm_api_error": "Provider 返回错误",
+        "llm_auth_failed": "鉴权失败",
+        "llm_bad_request": "请求参数错误",
+        "llm_config_error": "模型/Provider 配置错误",
+        "llm_empty_result": "空响应",
+        "llm_init_failed": "客户端初始化失败",
+        "llm_model_not_found": "模型未找到 (404)",
+        "llm_network_error": "网络错误",
+        "llm_parse_error": "响应解析失败",
+        "llm_rate_limited": "速率限制 (429)",
+        "llm_timeout": "超时 (5s)",
+        "llm_unknown": "未知 LLM 错误",
+        "pipeline_timeout": "流水线超时 (10s)"
+      },
       "errorsOnlyToggle": "仅显示失败",
       "panelDetail": "详情",
       "panelErrorType": "错误类型",
       "panelModel": "模型",
+      "panelProvider": "Provider",
       "panelTimestamp": "时间戳",
       "stageAsr": "ASR",
       "stagePolish": "Polish",

@@ -145,6 +145,69 @@ fn get_window_title_via_accessibility(pid: u64) -> Result<String, String> {
     }
 }
 
+/// macOS-only safe variant for the 500ms foreground poller. Calls NSWorkspace
+/// directly via objc2 with explicit nil checks so it never aborts on a transient
+/// nil from `frontmostApplication` (which happens during focus transitions —
+/// the auto-generated `appkit-nsworkspace-bindings` deref the raw pointer and
+/// trigger a non-unwinding panic that catch_unwind cannot recover from).
+///
+/// Returned info lacks the window-position / title / window_id fields because
+/// NSWorkspace alone cannot supply them; the poller's downstream consumers
+/// (quick_insert_to_target, paste_text_to_active_window) only need pid + app_name.
+#[cfg(target_os = "macos")]
+pub fn safe_fetch_frontmost_app_macos() -> Result<ActiveWindowInfo, String> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send, msg_send_id};
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+
+    unsafe {
+        let workspace_cls = class!(NSWorkspace);
+        let workspace: Retained<AnyObject> = msg_send_id![workspace_cls, sharedWorkspace];
+
+        let frontmost: Option<Retained<AnyObject>> =
+            msg_send_id![&*workspace, frontmostApplication];
+        let app = frontmost.ok_or_else(|| "frontmostApplication returned nil".to_string())?;
+
+        let pid_i32: i32 = msg_send![&*app, processIdentifier];
+        if pid_i32 <= 0 {
+            return Err(format!("invalid pid {} from frontmostApplication", pid_i32));
+        }
+        let pid = pid_i32 as u64;
+
+        // localizedName / bundleIdentifier can each return nil; treat as Unknown.
+        let read_ns_string = |obj: Option<Retained<AnyObject>>| -> Option<String> {
+            let ns = obj?;
+            let utf8: *const c_char = msg_send![&*ns, UTF8String];
+            if utf8.is_null() {
+                return None;
+            }
+            Some(CStr::from_ptr(utf8).to_string_lossy().into_owned())
+        };
+
+        let name_obj: Option<Retained<AnyObject>> = msg_send_id![&*app, localizedName];
+        let app_name = read_ns_string(name_obj).unwrap_or_else(|| "Unknown".to_string());
+
+        let bundle_obj: Option<Retained<AnyObject>> = msg_send_id![&*app, bundleIdentifier];
+        let bundle_id = read_ns_string(bundle_obj).unwrap_or_default();
+
+        Ok(ActiveWindowInfo {
+            title: String::new(),
+            app_name,
+            window_id: bundle_id,
+            process_id: pid,
+            process_path: String::new(),
+            position: WindowPosition {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+        })
+    }
+}
+
 pub fn fetch_cursor_position() -> Result<CursorPosition, String> {
     let enigo =
         Enigo::new(&Settings::default()).map_err(|e| format!("创建 Enigo 实例失败: {}", e))?;

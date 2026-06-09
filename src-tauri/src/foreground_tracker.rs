@@ -1,4 +1,8 @@
-use crate::active_window::{fetch_active_window, ActiveWindowInfo};
+#[cfg(not(target_os = "macos"))]
+use crate::active_window::fetch_active_window;
+#[cfg(target_os = "macos")]
+use crate::active_window::safe_fetch_frontmost_app_macos as fetch_active_window;
+use crate::active_window::ActiveWindowInfo;
 use log::warn;
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};

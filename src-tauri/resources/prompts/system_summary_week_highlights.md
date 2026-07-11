@@ -17,14 +17,12 @@ ${voice_stream_table}
 
 ## 输出要求（只输出 JSON）
 
-```json
 {
-  "highlights": {
-    "title": "本周亮点",
-    "items": ["值得记录的成就或进展", "有价值的想法或灵感"]
-  }
+"highlights": {
+"title": "本周亮点",
+"items": ["值得记录的成就或进展", "有价值的想法或灵感"]
 }
-```
+}
 
 ## 分析要求
 

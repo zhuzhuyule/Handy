@@ -1,7 +1,7 @@
 ---
 id: "code_explain"
 name: "代码解释"
-description: "解释代码逻辑,帮助理解复杂代码"
+description: '解释代码逻辑，帮助理解复杂代码。当用户说"解释这段代码""这段代码什么意思""讲讲这个函数"时触发。'
 output_mode: chat
 icon: "IconFileSearch"
 locked: false

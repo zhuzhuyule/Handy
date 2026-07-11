@@ -670,29 +670,53 @@ pub fn hide_recording_overlay(app_handle: &AppHandle) {
     }
 }
 
-pub fn emit_levels(app_handle: &AppHandle, levels: &Vec<f32>) {
+/// Cached "overlay is enabled" flag (`overlay_position != None`), kept in sync
+/// with settings. Read on every audio level callback (~24-30 Hz), so the audio
+/// hot path never touches the settings store. Defaults to false so nothing is
+/// emitted until `setup` / `write_settings` populates it from real settings.
+///
+/// This is the core of the WebKit memory-leak fix (upstream Handy #1279/#1447):
+/// the `recording_overlay` webview is created at boot regardless of
+/// `overlay_position`, and every `mic-level` event its WebKit subprocess
+/// processes drives an unbounded C++ allocation. Skipping emission when the
+/// overlay is disabled removes the leak driver for `overlay_position: none`
+/// users; targeting only the overlay window (below) halves the per-callback
+/// WebKit dispatch for everyone else.
+static OVERLAY_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Refresh the cached overlay-enabled flag from settings. Called once at
+/// startup and from `write_settings` on every persisted settings change, so
+/// every path that can alter `overlay_position` keeps the cache in sync.
+pub fn refresh_overlay_enabled_cache(settings: &settings::AppSettings) {
+    OVERLAY_ENABLED.store(
+        settings.overlay_position != OverlayPosition::None,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn emit_levels(app_handle: &AppHandle, levels: &[f32]) {
+    // Skip entirely when the overlay is disabled: no window listens for
+    // `mic-level`, yet a hidden overlay's WebKit subprocess would still leak
+    // on each event it processes.
+    if !OVERLAY_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+
     use std::sync::atomic::{AtomicU64, Ordering};
     static EMIT_COUNT: AtomicU64 = AtomicU64::new(0);
     let count = EMIT_COUNT.fetch_add(1, Ordering::Relaxed);
     // Log every ~2 seconds (assuming ~30 emits/sec)
-    if count % 60 == 0 {
+    if count.is_multiple_of(60) {
         let max = levels.iter().cloned().fold(0.0f32, f32::max);
-        let has_overlay = app_handle.get_webview_window("recording_overlay").is_some();
-        log::debug!(
-            "[waveform-emit] #{} max_level={:.3} has_overlay={}",
-            count,
-            max,
-            has_overlay,
-        );
+        log::debug!("[waveform-emit] #{} max_level={:.3}", count, max);
     }
 
-    // emit levels to main app
-    let _ = app_handle.emit("mic-level", levels);
-
-    // also emit to the recording overlay if it's open
-    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
-        let _ = overlay_window.emit("mic-level", levels);
-    }
+    // Target only the overlay window. In Tauri 2 both `AppHandle::emit` and
+    // `WebviewWindow::emit` broadcast to every webview; `mic-level` is consumed
+    // solely by the overlay (RecordingOverlay.tsx), so one targeted emit is
+    // correct and produces a single eval_script per callback instead of the old
+    // broadcast + per-window pair.
+    let _ = app_handle.emit_to("recording_overlay", "mic-level", levels);
 }
 
 /// Makes the overlay window key window so it can receive keyboard input

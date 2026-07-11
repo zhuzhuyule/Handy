@@ -1757,10 +1757,6 @@ impl ShortcutAction for TranscribeAction {
                                 (primary, None)
                             }
                             Err(_elapsed) => {
-                                log::warn!(
-                                    "[ASR] Online-only ASR timed out after {}s, prompting user",
-                                    online_timeout_secs
-                                );
                                 if let Some(path) =
                                     save_debug_audio(&ah, &samples, "online-only-timeout")
                                 {
@@ -1769,85 +1765,150 @@ impl ShortcutAction for TranscribeAction {
                                         path.display()
                                     );
                                 }
-                                let _ = ah.emit(
-                                    "asr-online-timeout",
-                                    serde_json::json!({
-                                        "has_local_fallback": false
-                                    }),
-                                );
 
-                                // Wait for user decision via oneshot channel
-                                let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-                                {
-                                    let state = ah.state::<crate::AsrTimeoutResponseSender>();
-                                    let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
-                                    *guard = Some(tx);
-                                }
+                                // A local ASR model is the real fallback: prefer it
+                                // over blocking the user with a prompt. Returning Err
+                                // here lets the last-resort local path (after this
+                                // match) run the local model immediately — no prompt,
+                                // no multi-second hang.
+                                let local_model_id = settings
+                                    .post_process_secondary_model_id
+                                    .as_ref()
+                                    .filter(|id| !id.trim().is_empty())
+                                    .cloned()
+                                    .unwrap_or_else(|| settings.selected_model.clone());
 
-                                // Give user up to 120s to respond; auto-cancel if no response
-                                match timeout(Duration::from_secs(120), rx).await {
-                                    Err(_elapsed) => {
-                                        log::warn!("[ASR] User did not respond to timeout prompt within 120s, auto-cancelling");
-                                        (
-                                            Err(anyhow::anyhow!("ASR timeout: no user response")),
-                                            None,
-                                        )
+                                if !local_model_id.trim().is_empty() {
+                                    log::warn!(
+                                        "[ASR] Online ASR timed out after {}s — falling back to local model '{}'",
+                                        online_timeout_secs,
+                                        local_model_id
+                                    );
+                                    (
+                                        Err(anyhow::anyhow!(
+                                            "Online ASR timed out, using local fallback"
+                                        )),
+                                        None,
+                                    )
+                                } else {
+                                    // No local model installed — the only recourse is
+                                    // to ask the user. Keep the wait short so an
+                                    // unattended session ends promptly instead of
+                                    // appearing frozen.
+                                    log::warn!(
+                                        "[ASR] Online ASR timed out after {}s and no local model is installed, prompting user",
+                                        online_timeout_secs
+                                    );
+                                    let _ = ah.emit(
+                                        "asr-online-timeout",
+                                        serde_json::json!({
+                                            "has_local_fallback": false
+                                        }),
+                                    );
+
+                                    // Wait for user decision via oneshot channel
+                                    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+                                    {
+                                        let state = ah.state::<crate::AsrTimeoutResponseSender>();
+                                        let mut guard =
+                                            state.lock().unwrap_or_else(|e| e.into_inner());
+                                        *guard = Some(tx);
                                     }
-                                    Ok(channel_result) => {
-                                        match channel_result {
-                                            Ok(action) => match action.as_str() {
-                                                "continue" | "retry" => {
-                                                    log::info!(
-                                                        "[ASR] User chose to {} online ASR",
-                                                        action
-                                                    );
-                                                    // Re-send the online ASR request (original handle was consumed by timeout)
-                                                    if let Some(cached) =
-                                                        cached_model_for_retry.as_ref()
-                                                    {
-                                                        let primary = execute_online_asr_request(
-                                                            &ah,
-                                                            &settings,
-                                                            cached,
-                                                            samples.clone(),
-                                                            settings.selected_language.clone(),
-                                                            false,
-                                                            asr_metrics.clone(),
-                                                            asr_history_id,
-                                                            asr_audio_duration_ms,
-                                                        )
-                                                        .await;
-                                                        (primary, None)
-                                                    } else {
+
+                                    // Give user up to 30s to respond; auto-cancel otherwise.
+                                    const TIMEOUT_PROMPT_WAIT_SECS: u64 = 30;
+                                    match timeout(Duration::from_secs(TIMEOUT_PROMPT_WAIT_SECS), rx)
+                                        .await
+                                    {
+                                        Err(_elapsed) => {
+                                            log::warn!(
+                                                "[ASR] User did not respond to timeout prompt within {}s, auto-cancelling",
+                                                TIMEOUT_PROMPT_WAIT_SECS
+                                            );
+                                            (
+                                                Err(anyhow::anyhow!(
+                                                    "ASR timeout: no user response"
+                                                )),
+                                                None,
+                                            )
+                                        }
+                                        Ok(channel_result) => {
+                                            match channel_result {
+                                                Ok(action) => match action.as_str() {
+                                                    "continue" | "retry" => {
+                                                        // Retry the fallback model when the
+                                                        // chain has one — the primary just
+                                                        // timed out, so re-hitting it is the
+                                                        // least useful choice.
+                                                        let retry_cached = settings
+                                                            .selected_asr_model
+                                                            .as_ref()
+                                                            .and_then(|c| c.fallback_id.as_ref())
+                                                            .and_then(|fid| {
+                                                                settings.cached_models.iter().find(
+                                                                    |m| {
+                                                                        m.model_type
+                                                                            == crate::settings::ModelType::Asr
+                                                                            && m.id == *fid
+                                                                    },
+                                                                )
+                                                            })
+                                                            .or(cached_model_for_retry.as_ref());
+                                                        if let Some(cached) = retry_cached {
+                                                            log::info!(
+                                                                "[ASR] User chose to {} online ASR, retrying model '{}'",
+                                                                action,
+                                                                cached.id
+                                                            );
+                                                            let primary =
+                                                                execute_online_asr_request(
+                                                                    &ah,
+                                                                    &settings,
+                                                                    cached,
+                                                                    samples.clone(),
+                                                                    settings
+                                                                        .selected_language
+                                                                        .clone(),
+                                                                    false,
+                                                                    asr_metrics.clone(),
+                                                                    asr_history_id,
+                                                                    asr_audio_duration_ms,
+                                                                )
+                                                                .await;
+                                                            (primary, None)
+                                                        } else {
+                                                            (
+                                                                Err(anyhow::anyhow!(
+                                                                    "No cached model for retry"
+                                                                )),
+                                                                None,
+                                                            )
+                                                        }
+                                                    }
+                                                    _ => {
+                                                        // "cancel" or unknown
+                                                        log::info!(
+                                                            "[ASR] User cancelled online ASR"
+                                                        );
                                                         (
                                                             Err(anyhow::anyhow!(
-                                                                "No cached model for retry"
+                                                                "User cancelled online ASR"
                                                             )),
                                                             None,
                                                         )
                                                     }
-                                                }
-                                                _ => {
-                                                    // "cancel" or unknown
-                                                    log::info!("[ASR] User cancelled online ASR");
+                                                },
+                                                Err(_) => {
+                                                    log::warn!(
+                                                        "[ASR] Timeout response channel dropped, cancelling"
+                                                    );
                                                     (
                                                         Err(anyhow::anyhow!(
-                                                            "User cancelled online ASR"
+                                                            "ASR timeout response channel dropped"
                                                         )),
                                                         None,
                                                     )
                                                 }
-                                            },
-                                            Err(_) => {
-                                                log::warn!(
-                                            "[ASR] Timeout response channel dropped, cancelling"
-                                        );
-                                                (
-                                                    Err(anyhow::anyhow!(
-                                                        "ASR timeout response channel dropped"
-                                                    )),
-                                                    None,
-                                                )
                                             }
                                         }
                                     }

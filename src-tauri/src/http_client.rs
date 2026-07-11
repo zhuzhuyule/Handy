@@ -117,17 +117,38 @@ pub fn build_blocking_http_client(
     proxy_url: Option<&str>,
     timeout: Duration,
 ) -> Result<reqwest::blocking::Client, String> {
+    build_blocking_http_client_with_policy(proxy_url, true, timeout)
+}
+
+/// Blocking client with explicit control over system-proxy inheritance.
+///
+/// reqwest reads `HTTP(S)_PROXY` / `ALL_PROXY` from the environment by default.
+/// When `use_system_proxy` is false and no explicit `proxy_url` is given, this
+/// calls `.no_proxy()` so the request connects directly — letting a provider
+/// with `use_proxy=false` (e.g. a domestic ASR endpoint) bypass a system proxy
+/// that the user only set to reach overseas providers. Without this, both the
+/// domestic and overseas providers share the one proxy path and fail together.
+pub fn build_blocking_http_client_with_policy(
+    proxy_url: Option<&str>,
+    use_system_proxy: bool,
+    timeout: Duration,
+) -> Result<reqwest::blocking::Client, String> {
     let mut builder = reqwest::blocking::Client::builder()
         .cookie_store(true)
         .timeout(timeout);
 
-    if let Some(url) = proxy_url {
-        if !url.is_empty() {
+    match proxy_url.filter(|u| !u.is_empty()) {
+        Some(url) => {
             debug!("[HttpClient] Using blocking proxy: {}", url);
             let proxy = reqwest::Proxy::all(url)
                 .map_err(|e| format!("Invalid proxy URL '{}': {}", url, e))?;
             builder = builder.proxy(proxy);
         }
+        None if !use_system_proxy => {
+            debug!("[HttpClient] Blocking client: direct connect (no_proxy)");
+            builder = builder.no_proxy();
+        }
+        None => {}
     }
 
     builder

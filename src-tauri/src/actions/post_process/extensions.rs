@@ -668,6 +668,8 @@ async fn execute_single_model_post_process(
         .map(super::recent_context::get_for_app)
         .unwrap_or_default();
 
+    let detected_language =
+        super::pipeline::detect_language_heuristic(transcription, &settings.app_language);
     let built = super::prompt_builder::PromptBuilder::new(prompt, transcription)
         .streaming_transcription(streaming_transcription)
         .app_name(app_name)
@@ -676,6 +678,7 @@ async fn execute_single_model_post_process(
         .resolved_references(refs_content)
         .session_context(session_ctx)
         .app_language(&settings.app_language)
+        .detected_language(Some(&detected_language))
         .injection_policy(super::prompt_builder::InjectionPolicy::for_post_process(
             settings,
         ))

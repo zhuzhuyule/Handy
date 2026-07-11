@@ -17,15 +17,13 @@ ${voice_stream_table}
 
 ## 输出要求（只输出 JSON）
 
-```json
 {
-  "focus_assessment": {
-    "title": "专注度评估",
-    "score": 0,
-    "comment": "基于上下文切换频率和活动连续性的评估说明"
-  }
+"focus_assessment": {
+"title": "专注度评估",
+"score": 0,
+"comment": "基于上下文切换频率和活动连续性的评估说明"
 }
-```
+}
 
 ## 分析要求
 

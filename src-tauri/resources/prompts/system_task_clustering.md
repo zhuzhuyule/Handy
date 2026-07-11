@@ -21,23 +21,21 @@ You are an assistant that clusters a single day's worth of voice transcription e
 
 Return **only** a JSON array (no prose, no markdown fences) with this exact shape per cluster:
 
-```json
 [
-  {
-    "title": "<short noun phrase>",
-    "status": "<one of the four status values>",
-    "time_span": "<HH:MM-HH:MM range>",
-    "apps": ["<app names>"],
-    "source_history_ids": [<int>, <int>, ...],
-    "total_duration_ms": <int>,
-    "entry_count": <int>,
-    "summary": "<2-3 sentences in user's language>",
-    "blockers": ["<short blocker phrase>", ...],
-    "next_step": "<actionable next step or null>",
-    "keywords": ["<lowercase keyword>", ...]
-  }
+{
+"title": "<short noun phrase>",
+"status": "<one of the four status values>",
+"time_span": "<HH:MM-HH:MM range>",
+"apps": ["<app names>"],
+"source_history_ids": [<int>, <int>, ...],
+"total_duration_ms": <int>,
+"entry_count": <int>,
+"summary": "<2-3 sentences in user's language>",
+"blockers": ["<short blocker phrase>", ...],
+"next_step": "<actionable next step or null>",
+"keywords": ["<lowercase keyword>", ...]
+}
 ]
-```
 
 Order clusters by `total_duration_ms` descending.
 

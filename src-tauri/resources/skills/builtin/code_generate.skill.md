@@ -1,7 +1,7 @@
 ---
 id: "code_generate"
 name: "代码生成"
-description: "根据描述生成代码,支持多种编程语言"
+description: '根据描述生成代码，支持多种编程语言。当用户说"写个函数""生成代码""帮我写段脚本"时触发。'
 output_mode: chat
 icon: "IconCode"
 locked: false

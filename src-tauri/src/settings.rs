@@ -1364,10 +1364,18 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
             }
         }
 
-        let provider_exists = settings
+        let mut provider_exists = settings
             .post_process_providers
             .iter()
             .any(|existing| existing.id == provider.id);
+
+        // Required (non-deletable) builtin providers must always be present;
+        // deletable builtins stay removed if the user deleted them.
+        if !provider_exists && !provider.deletable {
+            settings.post_process_providers.push(provider.clone());
+            provider_exists = true;
+            changed = true;
+        }
 
         if provider_exists && !settings.post_process_api_keys.contains_key(&provider.id) {
             settings
@@ -2246,6 +2254,11 @@ pub fn write_settings(app: &AppHandle, settings: AppSettings) {
 
     // Invalidate cache
     SETTINGS_VERSION.fetch_add(1, Ordering::Release);
+
+    // Keep the overlay-enabled cache (read on the audio hot path) in sync with
+    // any change to overlay_position — covers the dedicated setter, import,
+    // and reset paths since they all funnel through write_settings.
+    crate::overlay::refresh_overlay_enabled_cache(&settings);
 }
 
 pub fn get_bindings(app: &AppHandle) -> HashMap<String, ShortcutBinding> {

@@ -33,9 +33,7 @@ Default to `asr_error` when the corrected form appears to be a proper noun, bran
 
 JSON array only, no other text:
 
-```json
 [{ "original": "A", "corrected": "B", "type": "asr_error", "category": "term" }]
-```
 
 - `type`: "asr_error" | "semantic_edit"
 - `category` (asr_error only): "person" | "brand" | "term" | "abbreviation"

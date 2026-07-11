@@ -184,6 +184,11 @@ async fn unified_post_process_inner(
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
     let mut intent_decision: Option<super::IntentDecision> = None;
+    // Deterministic local hotword scan result — the intent model cannot see
+    // the user's hotword table, so its needs_hotword / pass_through judgments
+    // are blind to known misrecognition forms. A local match overrides both
+    // (spec docs/specs/2026-06-11-hotword-local-matching-and-polish-prompt-quality.spec.md).
+    let mut local_scan = crate::managers::hotword::LocalHotwordScan::default();
 
     // Skip smart routing when:
     // - skill_mode: dedicated skill hotkey pressed, need skill routing not smart routing
@@ -229,6 +234,14 @@ async fn unified_post_process_inner(
             }
         }
 
+        local_scan = scan_local_hotwords(app_handle, &app_name, transcription);
+        if log_routing && (local_scan.alias_hit || local_scan.target_hit) {
+            info!(
+                "[UnifiedPipeline] Local hotword scan: alias_hit={}, target_hit={}",
+                local_scan.alias_hit, local_scan.target_hit
+            );
+        }
+
         // Step 2: Intent analysis
         let fallback_provider = match settings.active_post_process_provider() {
             Some(p) => p,
@@ -254,20 +267,29 @@ async fn unified_post_process_inner(
 
         match &routing_decision {
             Some(d) if d.action == super::routing::SmartAction::PassThrough => {
-                // Override PassThrough to LitePolish if text contains repetition patterns
-                // (e.g. stuttering, filler sounds like "啊啊", "嗯嗯", or ABAB patterns)
-                if has_repetition_pattern(transcription) {
+                // Override PassThrough to LitePolish when either:
+                // - text contains repetition patterns (stuttering, "啊啊", ABAB), or
+                // - text contains a known ASR misrecognition form (hotword alias) —
+                //   the router sees "fluent" text and cannot know it is wrong.
+                let override_reason = if has_repetition_pattern(transcription) {
+                    Some("repetition_pattern")
+                } else if local_scan.alias_hit {
+                    Some("hotword_alias_match")
+                } else {
+                    None
+                };
+                if let Some(reason) = override_reason {
                     if log_routing {
                         info!(
-                            "[UnifiedPipeline] Step 2: PassThrough overridden to LitePolish (repetition detected, {} chars)",
-                            char_count
+                            "[UnifiedPipeline] Step 2: PassThrough overridden to LitePolish ({}, {} chars)",
+                            reason, char_count
                         );
                     }
                     // Fall through to LitePolish handling below
                     let mut upgraded = d.clone();
                     upgraded.action = super::routing::SmartAction::LitePolish;
                     decision.intent_overridden = true;
-                    decision.intent_override_reason = Some("repetition_pattern".to_string());
+                    decision.intent_override_reason = Some(reason.to_string());
                     intent_decision = Some(upgraded);
                 } else {
                     if log_routing {
@@ -351,10 +373,14 @@ async fn unified_post_process_inner(
         .as_ref()
         .map(|d| d.action == super::routing::SmartAction::LitePolish)
         .unwrap_or(false);
+    // Local scan overrides the intent model's blind needs_hotword=false:
+    // an alias/target hit is direct evidence the vocabulary is in play.
     let needs_hotword = intent_decision
         .as_ref()
         .map(|d| d.needs_hotword)
-        .unwrap_or(true); // Default: inject hotwords
+        .unwrap_or(true) // Default: inject hotwords
+        || local_scan.alias_hit
+        || local_scan.target_hit;
     let intent_tokens = intent_decision.as_ref().and_then(|d| d.token_count);
 
     // Resolve detected language: intent model > heuristic > user setting
@@ -389,19 +415,15 @@ async fn unified_post_process_inner(
             .get_prompt(app_handle, "system_lite_polish")
             .unwrap_or_else(|_| "Fix minor ASR errors. Output corrected text only.".to_string());
 
-        // Use default prompt as base, override id and instructions
-        let lite_prompt = if let Some(base) = lite_settings.post_process_prompts.first() {
-            let mut p = base.clone();
-            p.id = "__LITE_POLISH__".to_string();
-            p.name = "轻量润色".to_string();
-            p.instructions = lite_instructions;
-            p
-        } else {
-            decision.result_type = "Skipped".to_string();
-            decision.bypass_reason = Some("prompt_not_found".to_string());
-            decision.total_elapsed_ms = pipeline_start.elapsed().as_millis() as u64;
-            log_pipeline_decision(app_handle, &decision);
-            return super::PipelineResult::Skipped;
+        // Construct a clean prompt instead of cloning an existing skill —
+        // cloning leaked the base skill's pinned model_id, which then took
+        // precedence over length_routing_short_model in model resolution.
+        let lite_prompt = LLMPrompt {
+            id: "__LITE_POLISH__".to_string(),
+            name: "轻量润色".to_string(),
+            instructions: lite_instructions,
+            output_mode: crate::settings::SkillOutputMode::Polish,
+            ..Default::default()
         };
 
         // Check for fallback chain on the lite model
@@ -461,6 +483,7 @@ async fn unified_post_process_inner(
             .cursor_context(cursor_context.as_ref())
             .session_context(session_ctx)
             .app_language(&lite_settings.app_language)
+            .detected_language(Some(&detected_language))
             .injection_policy(super::prompt_builder::InjectionPolicy::for_post_process(
                 &lite_settings,
             ))
@@ -982,7 +1005,7 @@ pub(super) fn build_hotword_injection(
 
 /// Detect language from text heuristic: if all printable chars are ASCII, assume English;
 /// otherwise use the user's app_language setting.
-fn detect_language_heuristic(text: &str, app_language: &str) -> String {
+pub(super) fn detect_language_heuristic(text: &str, app_language: &str) -> String {
     let has_non_ascii = text
         .chars()
         .any(|c| !c.is_ascii() && !c.is_ascii_whitespace());
@@ -1001,27 +1024,31 @@ fn detect_language_heuristic(text: &str, app_language: &str) -> String {
     }
 }
 
-/// Detect usage scenario from app name
+/// Detect usage scenario from app name.
+/// Delegates to the single app-list maintained in the hotword module.
 pub(super) fn detect_scenario(app_name: &Option<String>) -> Option<HotwordScenario> {
-    let work_apps = [
-        "Code", "VSCode", "Cursor", "Terminal", "iTerm", "Slack", "Notion", "Figma", "Xcode",
-        "IntelliJ",
-    ];
-    let casual_apps = ["WeChat", "Messages", "Telegram", "WhatsApp", "Discord"];
+    crate::managers::hotword::detect_scenario_from_app_name(app_name.as_deref())
+}
 
-    if let Some(name) = app_name {
-        for app in work_apps {
-            if name.contains(app) {
-                return Some(HotwordScenario::Work);
-            }
-        }
-        for app in casual_apps {
-            if name.contains(app) {
-                return Some(HotwordScenario::Casual);
-            }
+/// Deterministic local hotword scan. Degrades to all-false on any failure
+/// so the pipeline never blocks on it.
+fn scan_local_hotwords(
+    app_handle: &AppHandle,
+    app_name: &Option<String>,
+    text: &str,
+) -> crate::managers::hotword::LocalHotwordScan {
+    let Some(hm) = app_handle.try_state::<Arc<HistoryManager>>() else {
+        return Default::default();
+    };
+    let hotword_manager = HotwordManager::new(hm.db_path.clone());
+    let scenario = detect_scenario(app_name).unwrap_or(HotwordScenario::Work);
+    match hotword_manager.scan_local_match(scenario, text) {
+        Ok(scan) => scan,
+        Err(e) => {
+            log::warn!("[UnifiedPipeline] Local hotword scan failed: {}", e);
+            Default::default()
         }
     }
-    None // Both scenarios apply
 }
 
 async fn execute_votype_rewrite_prompt(
@@ -1153,6 +1180,10 @@ async fn execute_votype_rewrite_prompt(
                     change.from, change.to, change.reason
                 );
             }
+            // Rewrite output bypasses extract_llm_text, so apply the same
+            // leading-punctuation guard here.
+            let rewritten_text =
+                super::core::strip_leading_stray_punctuation(&parsed.rewritten_text).to_string();
             // Append this exchange to the multi-turn conversation history
             crate::review_window::append_rewrite_message(
                 session_id,
@@ -1162,7 +1193,7 @@ async fn execute_votype_rewrite_prompt(
             crate::review_window::append_rewrite_message(
                 session_id,
                 crate::review_window::RewriteRole::Assistant,
-                parsed.rewritten_text.clone(),
+                rewritten_text.clone(),
             );
             // Emit operation completion for overlay flash
             if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -1178,7 +1209,7 @@ async fn execute_votype_rewrite_prompt(
                 );
             }
             return (
-                Some(parsed.rewritten_text),
+                Some(rewritten_text),
                 Some(model.clone()),
                 Some(prompt.id.clone()),
                 false,
@@ -2627,13 +2658,23 @@ pub(super) fn has_repetition_pattern(text: &str) -> bool {
 
     let chars: Vec<char> = text.chars().collect();
 
-    // Check for consecutive identical characters (≥2 non-punctuation)
+    // A doubled filler sound is already stutter ("嗯嗯", "啊啊").
+    const FILLER_CHARS: [char; 9] = ['啊', '嗯', '呃', '额', '哦', '唔', '诶', '呀', '嘛'];
+    for i in 1..chars.len() {
+        if chars[i] == chars[i - 1] && FILLER_CHARS.contains(&chars[i]) {
+            return true;
+        }
+    }
+
+    // Three or more consecutive identical characters ("对对对", "我我我").
+    // A single doubled char is normal — Chinese 叠词 ("天天", "谢谢") and
+    // English double letters ("hello") — so the threshold is 3.
     let mut repeat_count = 1;
     for i in 1..chars.len() {
         if chars[i] == chars[i - 1] && !chars[i].is_whitespace() && !chars[i].is_ascii_punctuation()
         {
             repeat_count += 1;
-            if repeat_count >= 2 {
+            if repeat_count >= 3 {
                 return true;
             }
         } else {
@@ -2641,35 +2682,25 @@ pub(super) fn has_repetition_pattern(text: &str) -> bool {
         }
     }
 
-    // Check for repeated word/segment patterns (ABAB)
-    // Split into words and check for consecutive duplicates
+    // Repeated whitespace-separated words ("ok ok")
     let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() >= 2 {
-        let mut dup_count = 1;
-        for i in 1..words.len() {
-            if words[i].eq_ignore_ascii_case(words[i - 1]) {
-                dup_count += 1;
-                if dup_count >= 2 {
-                    return true;
-                }
-            } else {
-                dup_count = 1;
-            }
+    for i in 1..words.len() {
+        if words[i].eq_ignore_ascii_case(words[i - 1]) {
+            return true;
         }
     }
 
-    // Check CJK repeated segments: split into 1-3 char segments and look for ABAB
+    // CJK repeated segments of length 2-3 ("好的好的", "这个这个").
+    // Length-1 segments are excluded — they are legitimate 叠词 ("天天").
     let cjk_chars: Vec<char> = chars
         .iter()
         .filter(|c| matches!(**c, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}'))
         .copied()
         .collect();
-    for seg_len in 1..=3 {
+    for seg_len in 2..=3 {
         if cjk_chars.len() >= seg_len * 2 {
             for i in 0..=cjk_chars.len() - seg_len * 2 {
-                let seg1: String = cjk_chars[i..i + seg_len].iter().collect();
-                let seg2: String = cjk_chars[i + seg_len..i + seg_len * 2].iter().collect();
-                if seg1 == seg2 {
+                if cjk_chars[i..i + seg_len] == cjk_chars[i + seg_len..i + seg_len * 2] {
                     return true;
                 }
             }

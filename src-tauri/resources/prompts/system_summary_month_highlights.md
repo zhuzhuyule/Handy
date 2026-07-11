@@ -17,14 +17,12 @@ ${voice_stream_table}
 
 ## 输出要求（只输出 JSON）
 
-```json
 {
-  "highlights": {
-    "title": "月度亮点",
-    "items": ["主要成就和里程碑", "有价值的决策或转变"]
-  }
+"highlights": {
+"title": "月度亮点",
+"items": ["主要成就和里程碑", "有价值的决策或转变"]
 }
-```
+}
 
 ## 分析要求
 

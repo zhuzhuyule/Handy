@@ -630,6 +630,8 @@ pub(super) async fn execute_default_polish<'a>(
     };
 
     // Use PromptBuilder for consistent variable processing
+    let detected_language =
+        super::pipeline::detect_language_heuristic(transcription, &settings.app_language);
     let built = super::prompt_builder::PromptBuilder::new(default_prompt, transcription)
         .app_name(app_name.as_deref())
         .window_title(window_title.as_deref())
@@ -637,6 +639,7 @@ pub(super) async fn execute_default_polish<'a>(
         .hotword_injection(hotword_injection)
         .resolved_references(refs_content)
         .app_language(&settings.app_language)
+        .detected_language(Some(&detected_language))
         .injection_policy(super::prompt_builder::InjectionPolicy::for_post_process(
             settings,
         ))
@@ -1333,10 +1336,13 @@ async fn execute_smart_polish_lite<'a>(
     };
 
     // Build prompt (model-independent)
+    let detected_language =
+        super::pipeline::detect_language_heuristic(transcription, &lite_settings.app_language);
     let built = super::prompt_builder::PromptBuilder::new(&lite_prompt, transcription)
         .app_name(app_name.as_deref())
         .hotword_injection(hotword_injection)
         .app_language(&lite_settings.app_language)
+        .detected_language(Some(&detected_language))
         .injection_policy(super::prompt_builder::InjectionPolicy::for_post_process(
             &lite_settings,
         ))

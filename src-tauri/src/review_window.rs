@@ -87,6 +87,23 @@ struct ReviewWindowHidePayload {
 }
 
 static REVIEW_WINDOW_READY: AtomicBool = AtomicBool::new(false);
+/// Monotonic sequence for payloads emitted directly into an already-READY
+/// webview. `review_window_content_ready` acks by copying the current value
+/// into REVIEW_CONTENT_ACK_SEQ; the show watchdog recovers when the ack never
+/// lands (dormant webview — see REVIEW_WINDOW_IDLE_DESTROY_SECS comment).
+static REVIEW_SHOW_ATTEMPT_SEQ: AtomicU64 = AtomicU64::new(0);
+static REVIEW_CONTENT_ACK_SEQ: AtomicU64 = AtomicU64::new(0);
+/// How long to wait for `review_window_content_ready` after a direct payload
+/// emit before declaring the webview dormant and recreating it.
+const REVIEW_CONTENT_ACK_TIMEOUT_MS: u64 = 1500;
+/// How long a freshly created webview gets to fire `review_window_ready`
+/// before the boot watchdog destroys and recreates it. Cold start is normally
+/// 300-700 ms; 4 s leaves slack for slow disks / first-launch JIT.
+const REVIEW_READY_TIMEOUT_MS: u64 = 4000;
+/// Consecutive boot-watchdog recreate attempts. Reset when ready fires.
+/// Capped so a structurally broken frontend bundle doesn't cause an endless
+/// destroy/recreate churn loop.
+static REVIEW_BOOT_WATCHDOG_RETRIES: AtomicU64 = AtomicU64::new(0);
 static REVIEW_WINDOW_FORCED_ACTIVATION: AtomicBool = AtomicBool::new(false);
 static REVIEW_WINDOW_FOCUS_TOKEN: AtomicU64 = AtomicU64::new(0);
 static REVIEW_WINDOW_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -413,6 +430,13 @@ fn ensure_review_window(app_handle: &AppHandle) -> bool {
         "review_window",
         tauri::WebviewUrl::App("src/review/index.html".into()),
     )
+    .on_page_load(|_window, payload| {
+        log::info!(
+            "[ReviewWindow] page load {:?}: {}",
+            payload.event(),
+            payload.url()
+        );
+    })
     .title("Votype Review")
     .resizable(true)
     .inner_size(REVIEW_WINDOW_WIDTH, REVIEW_WINDOW_HEIGHT)
@@ -581,10 +605,91 @@ pub fn show_review_window(
         // If JS is already loaded, emit immediately; otherwise review_window_ready() will replay
         if REVIEW_WINDOW_READY.load(Ordering::SeqCst) {
             let _ = emit_review_payload(app_handle, payload);
+            spawn_content_ack_watchdog(app_handle.clone());
+        } else {
+            spawn_ready_watchdog(app_handle.clone());
         }
 
         schedule_hide_windows(app_handle.clone());
     }
+}
+
+/// Watchdog for the fresh-create path: the payload sits in PENDING waiting
+/// for the new webview to fire `review_window_ready`. If the webview never
+/// initialises (load failure, suspended WebContent process, broken bundle),
+/// nothing would ever show. Destroy and recreate up to 2 times, then give up
+/// loudly so the log points at a frontend-side init failure.
+fn spawn_ready_watchdog(app_handle: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(REVIEW_READY_TIMEOUT_MS)).await;
+        if REVIEW_WINDOW_READY.load(Ordering::SeqCst) {
+            REVIEW_BOOT_WATCHDOG_RETRIES.store(0, Ordering::SeqCst);
+            return;
+        }
+        if !REVIEW_WINDOW_ACTIVE.load(Ordering::SeqCst) {
+            return;
+        }
+        let prior_retries = REVIEW_BOOT_WATCHDOG_RETRIES.fetch_add(1, Ordering::SeqCst);
+        if prior_retries >= 2 {
+            log::error!(
+                "[ReviewWindow] webview never fired review_window_ready after {} recreate attempts — giving up. Frontend bundle is likely failing to initialise; check the review webview console.",
+                prior_retries
+            );
+            return;
+        }
+        log::warn!(
+            "[ReviewWindow] review_window_ready not received within {}ms of creation — recreating webview (attempt {})",
+            REVIEW_READY_TIMEOUT_MS,
+            prior_retries + 1
+        );
+        destroy_review_window(&app_handle);
+        if ensure_review_window(&app_handle) {
+            spawn_ready_watchdog(app_handle);
+        } else {
+            log::error!("[ReviewWindow] boot watchdog failed to recreate review window");
+        }
+    });
+}
+
+/// macOS may suspend a kept-alive review webview: the window handle stays
+/// valid and REVIEW_WINDOW_READY stays true, but the JS event loop is dead —
+/// a directly-emitted payload never produces `review_window_content_ready`,
+/// so `window.show()` is never called and the review window silently fails
+/// to appear. Worse, the failed show bumps the lifecycle gen and cancels the
+/// pending idle-destroy, so every subsequent show fails too.
+///
+/// This watchdog converts that silent failure into recovery: if no
+/// content_ready ack arrives within the timeout, destroy the dormant webview
+/// and recreate it — the fresh webview fires `review_window_ready`, which
+/// replays the still-pending payload, then content_ready shows the window.
+fn spawn_content_ack_watchdog(app_handle: AppHandle) {
+    let attempt = REVIEW_SHOW_ATTEMPT_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(REVIEW_CONTENT_ACK_TIMEOUT_MS)).await;
+        // Review already confirmed/dismissed — nothing to recover.
+        if !REVIEW_WINDOW_ACTIVE.load(Ordering::SeqCst) {
+            return;
+        }
+        // Webview answered — healthy.
+        if REVIEW_CONTENT_ACK_SEQ.load(Ordering::SeqCst) >= attempt {
+            return;
+        }
+        // A newer show attempt supersedes this watchdog.
+        if REVIEW_SHOW_ATTEMPT_SEQ.load(Ordering::SeqCst) != attempt {
+            return;
+        }
+        log::warn!(
+            "[ReviewWindow] content_ready not received within {}ms — webview likely dormant, destroying and recreating",
+            REVIEW_CONTENT_ACK_TIMEOUT_MS
+        );
+        destroy_review_window(&app_handle);
+        if !ensure_review_window(&app_handle) {
+            log::error!("[ReviewWindow] watchdog failed to recreate review window");
+        }
+        // The fresh webview will fire review_window_ready → replay the pending
+        // payload → content_ready → show. Frontend re-measures and repositions
+        // on replay, so no size/position work is needed here.
+    });
 }
 
 /// Hides and destroys the review window to free memory
@@ -615,6 +720,7 @@ pub fn hide_review_window(app_handle: &AppHandle, history_id: Option<i64>) {
 #[tauri::command]
 pub fn review_window_ready(app: AppHandle) -> Result<(), String> {
     REVIEW_WINDOW_READY.store(true, Ordering::SeqCst);
+    REVIEW_BOOT_WATCHDOG_RETRIES.store(0, Ordering::SeqCst);
     log::info!("review_window_ready received");
 
     if !REVIEW_WINDOW_ACTIVE.load(Ordering::SeqCst) {
@@ -658,6 +764,13 @@ pub fn review_window_ready(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn review_window_content_ready(app: AppHandle) -> Result<(), String> {
     log::info!("review_window_content_ready received");
+
+    // Ack the show watchdog: any content_ready proves the JS event loop is
+    // alive (and the handler below shows the window when a payload is active).
+    REVIEW_CONTENT_ACK_SEQ.store(
+        REVIEW_SHOW_ATTEMPT_SEQ.load(Ordering::SeqCst),
+        Ordering::SeqCst,
+    );
 
     if !REVIEW_WINDOW_ACTIVE.load(Ordering::SeqCst) {
         log::info!("review_window_content_ready ignored (no active payload)");
@@ -913,6 +1026,8 @@ pub fn show_review_window_with_candidates(
             let _ = review_window.show();
             let _ = review_window.set_focus();
             schedule_focus_review_window(app_handle.clone(), focus_token);
+        } else {
+            spawn_ready_watchdog(app_handle.clone());
         }
 
         schedule_hide_windows(app_handle.clone());

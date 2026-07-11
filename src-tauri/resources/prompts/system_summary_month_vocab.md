@@ -17,21 +17,19 @@ ${voice_stream_table}
 
 ## 输出要求（只输出 JSON）
 
-```json
 {
-  "vocabulary_extracted": {
-    "title": "新词提取",
-    "items": [
-      {
-        "word": "OAuth 2.0",
-        "category": "term",
-        "originals": ["奥斯"],
-        "confidence": 90
-      }
-    ]
-  }
+"vocabulary_extracted": {
+"title": "新词提取",
+"items": [
+{
+"word": "OAuth 2.0",
+"category": "term",
+"originals": ["奥斯"],
+"confidence": 90
 }
-```
+]
+}
+}
 
 ## 字段说明
 

@@ -622,6 +622,46 @@ pub(super) fn extract_json_block(content: &str) -> Option<String> {
     None
 }
 
+/// Strip stray sentence punctuation from the start of polished output.
+///
+/// Models that delete a leading filler word ("呃，今天…") often leave the
+/// following punctuation behind, producing output that starts with "，".
+/// Prompts ask for this not to happen; this is the deterministic guarantee.
+///
+/// CJK punctuation is stripped unconditionally (no legitimate text starts
+/// with "，" or "。"). ASCII punctuation is stripped only when NOT followed
+/// by an alphanumeric character, so ".env", "!important", ":)" survive.
+pub(super) fn strip_leading_stray_punctuation(text: &str) -> &str {
+    fn is_cjk_punct(ch: char) -> bool {
+        matches!(
+            ch,
+            '，' | '。' | '！' | '？' | '；' | '：' | '、' | '…' | '·' | '～'
+        )
+    }
+    fn is_ascii_punct(ch: char) -> bool {
+        matches!(ch, ',' | '.' | '!' | '?' | ';' | ':' | '~')
+    }
+
+    let mut rest = text.trim_start();
+    loop {
+        let mut chars = rest.chars();
+        let Some(first) = chars.next() else {
+            return rest;
+        };
+        let next = chars.clone().next();
+        // ASCII punctuation is stray only when followed by whitespace,
+        // end-of-string, or more strippable punctuation — ".env",
+        // "!important", ":)" are legitimate starts.
+        let next_is_strippable =
+            next.is_none_or(|c| c.is_whitespace() || is_cjk_punct(c) || is_ascii_punct(c));
+        if is_cjk_punct(first) || (is_ascii_punct(first) && next_is_strippable) {
+            rest = chars.as_str().trim_start();
+        } else {
+            return rest;
+        }
+    }
+}
+
 /// Extract text from LLM response.
 /// Handles both plain text and JSON `{"text":"..."}` formats (for user-custom prompts).
 pub(super) fn extract_llm_text(content: &str) -> String {
@@ -631,12 +671,12 @@ pub(super) fn extract_llm_text(content: &str) -> String {
     if let Some(json) = extract_json_block(&cleaned) {
         if let Ok(parsed) = serde_json::from_str::<super::LlmReviewResponse>(&json) {
             if let Some(text) = parsed.text {
-                return text;
+                return strip_leading_stray_punctuation(&text).to_string();
             }
         }
     }
 
-    cleaned
+    strip_leading_stray_punctuation(&cleaned).to_string()
 }
 
 pub(super) fn extract_rewrite_response(content: &str) -> Option<super::RewriteResponse> {
@@ -699,9 +739,47 @@ fn salvage_rewrite_response(content: &str) -> Option<super::RewriteResponse> {
 #[cfg(test)]
 mod tests {
     use super::{
-        attempt_error_to_llm_error, classify_http_status_for_failover, extract_rewrite_response,
+        attempt_error_to_llm_error, classify_http_status_for_failover, extract_llm_text,
+        extract_rewrite_response, strip_leading_stray_punctuation,
     };
     use crate::provider_gateway::{AttemptError, AttemptErrorKind};
+
+    #[test]
+    fn test_strip_leading_stray_punctuation_cjk() {
+        assert_eq!(
+            strip_leading_stray_punctuation("，今天的会改到三点了。"),
+            "今天的会改到三点了。"
+        );
+        assert_eq!(strip_leading_stray_punctuation("。！？好的"), "好的");
+        assert_eq!(strip_leading_stray_punctuation("、 ，正文"), "正文");
+        // Interior punctuation untouched
+        assert_eq!(strip_leading_stray_punctuation("好的，收到"), "好的，收到");
+    }
+
+    #[test]
+    fn test_strip_leading_stray_punctuation_ascii_keeps_legit_starts() {
+        assert_eq!(strip_leading_stray_punctuation(", and then"), "and then");
+        assert_eq!(strip_leading_stray_punctuation(". done"), "done");
+        // ASCII punct followed by alphanumeric is a legitimate start
+        assert_eq!(strip_leading_stray_punctuation(".env 文件"), ".env 文件");
+        assert_eq!(strip_leading_stray_punctuation("!important"), "!important");
+        assert_eq!(strip_leading_stray_punctuation(":)"), ":)");
+        // Empty / all-punctuation collapses to empty
+        assert_eq!(strip_leading_stray_punctuation("。。。"), "");
+        assert_eq!(strip_leading_stray_punctuation(""), "");
+    }
+
+    #[test]
+    fn test_extract_llm_text_strips_leading_punctuation() {
+        assert_eq!(
+            extract_llm_text("，今天的会改到三点了。"),
+            "今天的会改到三点了。"
+        );
+        assert_eq!(
+            extract_llm_text("<think>removed filler</think>，正文内容"),
+            "正文内容"
+        );
+    }
 
     #[test]
     fn test_extract_rewrite_response_salvages_invalid_json_with_rewritten_text() {

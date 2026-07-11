@@ -17,14 +17,12 @@ ${voice_stream_table}
 
 ## 输出要求（只输出 JSON）
 
-```json
 {
-  "summary": {
-    "title": "月度回顾",
-    "content": "4-6 句话总结本月整体情况与主要成就"
-  }
+"summary": {
+"title": "月度回顾",
+"content": "4-6 句话总结本月整体情况与主要成就"
 }
-```
+}
 
 ## 分析要求
 

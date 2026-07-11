@@ -42,7 +42,7 @@ fn serialize_json<T: Serialize>(value: &T) -> Result<String> {
     Ok(serde_json::to_string(value)?)
 }
 
-fn detect_scenario_from_app_name(app_name: Option<&str>) -> Option<HotwordScenario> {
+pub(crate) fn detect_scenario_from_app_name(app_name: Option<&str>) -> Option<HotwordScenario> {
     let work_apps = [
         "Code", "VSCode", "Cursor", "Terminal", "iTerm", "Slack", "Notion", "Figma", "Xcode",
         "IntelliJ",
@@ -88,6 +88,37 @@ fn count_hotword_occurrences(text: &str, target: &str) -> usize {
     }
 
     text.match_indices(target).count()
+}
+
+/// Deterministic "does `text` contain `term`" check shared by the local
+/// hotword scanner and prompt-side correction filtering.
+///
+/// Reuses `count_hotword_occurrences` (ASCII word boundaries, CJK substring),
+/// then falls back to a space-stripped lowercase comparison for ASCII terms of
+/// ≥5 condensed chars so segmentation variants like "vo type" ↔ "votype"
+/// still match without weakening the word-boundary guarantee for short terms.
+pub fn text_contains_term(text: &str, term: &str) -> bool {
+    if count_hotword_occurrences(text, term) > 0 {
+        return true;
+    }
+    let term = term.trim();
+    if !is_ascii_word_like(term) {
+        return false;
+    }
+    let condensed_term: String = term
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if condensed_term.chars().count() < 5 {
+        return false;
+    }
+    let condensed_text: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    condensed_text.contains(&condensed_term)
 }
 
 fn is_ascii_word_like(term: &str) -> bool {
@@ -173,6 +204,19 @@ pub struct CorrectionPair {
 pub struct HotwordEntry {
     pub target: String,
     pub aliases: Vec<String>,
+}
+
+/// Result of a deterministic local scan of input text against the hotword
+/// table. Used to override LLM judgments that are blind to the user's
+/// hotword vocabulary (intent `needs_hotword`, PassThrough routing).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LocalHotwordScan {
+    /// Text contains a known misrecognized form (`originals` or
+    /// force-replace alias) — strong evidence the ASR output needs fixing.
+    pub alias_hit: bool,
+    /// Text already contains a hotword target verbatim — terms should be
+    /// kept intact, so injection is still worthwhile.
+    pub target_hit: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1010,7 +1054,15 @@ impl HotwordManager {
     }
 
     fn format_hotword_entry(entry: &HotwordEntry) -> String {
-        entry.target.clone()
+        if entry.aliases.is_empty() {
+            entry.target.clone()
+        } else {
+            format!(
+                "{}（误识别形式: {}）",
+                entry.target,
+                entry.aliases.join(" / ")
+            )
+        }
     }
 
     pub fn summarize_injection(injection: &HotwordInjection) -> String {
@@ -1082,7 +1134,16 @@ impl HotwordManager {
         }
     }
 
-    fn build_injection_from_ranked(&self, ranked: &[RankedHotword]) -> HotwordInjection {
+    /// Max aliases surfaced per hotword entry in the prompt. Keeps the
+    /// injection compact while still telling the LLM the common
+    /// misrecognized forms.
+    const MAX_ALIASES_PER_ENTRY: usize = 3;
+
+    fn build_injection_from_ranked(
+        &self,
+        ranked: &[RankedHotword],
+        input_texts: &[&str],
+    ) -> HotwordInjection {
         let mut injection = HotwordInjection::default();
         let mut seen_person = HashMap::new();
         let mut seen_product = HashMap::new();
@@ -1090,37 +1151,40 @@ impl HotwordManager {
         let mut seen_hotword = HashMap::new();
 
         for ranked_hotword in ranked {
-            match Self::normalize_hotword_bucket(&ranked_hotword.hotword.category) {
+            let hw = &ranked_hotword.hotword;
+            let alias_count = hw.originals.len().min(Self::MAX_ALIASES_PER_ENTRY);
+            let aliases = &hw.originals[..alias_count];
+            match Self::normalize_hotword_bucket(&hw.category) {
                 "person" => {
                     Self::merge_hotword_entry(
                         &mut injection.person_names,
                         &mut seen_person,
-                        &ranked_hotword.hotword.target,
-                        &[],
+                        &hw.target,
+                        aliases,
                     );
                 }
                 "product" => {
                     Self::merge_hotword_entry(
                         &mut injection.product_names,
                         &mut seen_product,
-                        &ranked_hotword.hotword.target,
-                        &[],
+                        &hw.target,
+                        aliases,
                     );
                 }
                 "domain" => {
                     Self::merge_hotword_entry(
                         &mut injection.domain_terms,
                         &mut seen_domain,
-                        &ranked_hotword.hotword.target,
-                        &[],
+                        &hw.target,
+                        aliases,
                     );
                 }
                 _ => {
                     Self::merge_hotword_entry(
                         &mut injection.hotwords,
                         &mut seen_hotword,
-                        &ranked_hotword.hotword.target,
-                        &[],
+                        &hw.target,
+                        aliases,
                     );
                 }
             }
@@ -1155,14 +1219,70 @@ impl HotwordManager {
                 .cmp(&a.stars)
                 .then_with(|| a.original.cmp(&b.original))
         });
+        // Pairs whose misrecognized form actually appears in the input must
+        // survive the cap — they are the only ones the LLM can act on. The
+        // partition is stable, so star ordering is preserved within each group.
+        let matches_input = |original: &str| {
+            input_texts
+                .iter()
+                .any(|t| !t.trim().is_empty() && text_contains_term(t, original))
+        };
+        let (mut hits, mut rest): (Vec<CorrectionPair>, Vec<CorrectionPair>) = injection
+            .correction_pairs
+            .drain(..)
+            .partition(|p| matches_input(&p.original));
+        hits.append(&mut rest);
+        injection.correction_pairs = hits;
         // Cap at 15 pairs
         injection.correction_pairs.truncate(15);
 
         injection
     }
 
-    fn render_ranked_term_reference(&self, ranked: &[RankedHotword]) -> String {
-        let injection = self.build_injection_from_ranked(ranked);
+    /// Deterministically scan `text` against the active hotword table.
+    /// No LLM involved — this is the authoritative answer to "does the
+    /// input touch the user's vocabulary", used to override blind LLM
+    /// judgments (intent `needs_hotword=false`, PassThrough routing).
+    pub fn scan_local_match(
+        &self,
+        scenario: HotwordScenario,
+        text: &str,
+    ) -> Result<LocalHotwordScan> {
+        let mut scan = LocalHotwordScan::default();
+        if text.trim().is_empty() {
+            return Ok(scan);
+        }
+        for hotword in self.get_by_scenario(scenario)? {
+            if hotword.status != "active" {
+                continue;
+            }
+            if !scan.target_hit && text_contains_term(text, &hotword.target) {
+                scan.target_hit = true;
+            }
+            if !scan.alias_hit {
+                scan.alias_hit = hotword
+                    .originals
+                    .iter()
+                    .chain(hotword.force_replace_originals.iter())
+                    .any(|alias| {
+                        !alias.trim().is_empty()
+                            && !alias.trim().eq_ignore_ascii_case(&hotword.target)
+                            && text_contains_term(text, alias)
+                    });
+            }
+            if scan.alias_hit && scan.target_hit {
+                break;
+            }
+        }
+        Ok(scan)
+    }
+
+    fn render_ranked_term_reference(
+        &self,
+        ranked: &[RankedHotword],
+        input_texts: &[&str],
+    ) -> String {
+        let injection = self.build_injection_from_ranked(ranked, input_texts);
         let summary = Self::summarize_injection(&injection);
 
         if summary == "(none)" {
@@ -1238,7 +1358,8 @@ impl HotwordManager {
             },
         ];
         let ranked = self.rank_hotwords(scenario, &contexts, app_name)?;
-        let injection = self.build_injection_from_ranked(&ranked);
+        let injection =
+            self.build_injection_from_ranked(&ranked, &[current_document, spoken_instruction]);
 
         debug!(
             "[Hotword] Built contextual injection for scenario {:?}: person={}, product={}, domain={}, hotwords={}",
@@ -1255,7 +1376,7 @@ impl HotwordManager {
     #[allow(dead_code)]
     pub fn build_injection(&self, scenario: HotwordScenario) -> Result<HotwordInjection> {
         let ranked = self.rank_hotwords(scenario, &[], None)?;
-        Ok(self.build_injection_from_ranked(&ranked))
+        Ok(self.build_injection_from_ranked(&ranked, &[]))
     }
 
     /// Build a compact ranked term reference for rewrite prompts.
@@ -1277,7 +1398,8 @@ impl HotwordManager {
             },
         ];
         let ranked = self.rank_hotwords(scenario, &contexts, app_name)?;
-        let reference = self.render_ranked_term_reference(&ranked);
+        let reference =
+            self.render_ranked_term_reference(&ranked, &[current_document, spoken_instruction]);
 
         debug!(
             "[Hotword] Built ranked term reference for scenario {:?}: len={}",
@@ -2048,8 +2170,11 @@ mod tests {
             .expect("build ranked term reference");
 
         assert!(reference.contains("VotypePro"));
-        assert!(!reference.contains("vo type"));
-        assert!(!reference.contains("vtype"));
+        // Aliases are now rendered (capped at MAX_ALIASES_PER_ENTRY) so the
+        // LLM knows the misrecognized forms it should correct.
+        assert!(reference.contains("vo type"));
+        assert!(reference.contains("vtype"));
+        assert!(reference.contains("误识别形式"));
         assert!(reference.contains("Noise1"));
     }
 
@@ -2092,9 +2217,108 @@ mod tests {
 
         assert!(rendered.iter().any(|entry| entry.contains("GSON")));
         assert!(rendered.iter().any(|entry| entry.contains("NoiseHotword")));
-        assert!(!rendered
+        // Aliases are rendered as labelled misrecognized forms next to the target.
+        assert!(rendered
             .iter()
-            .any(|entry| entry.contains("Jason") || entry.contains("GASON")));
+            .any(|entry| entry.contains("误识别形式") && entry.contains("Jason")));
+    }
+
+    #[test]
+    fn test_text_contains_term_word_boundary() {
+        // Short ASCII terms keep strict word boundaries — no substring hits.
+        assert!(!text_contains_term("format the disk", "mat"));
+        assert!(text_contains_term("send it to matt please", "Matt"));
+        // CJK substring match
+        assert!(text_contains_term("我在用窝太普写东西", "窝太普"));
+        assert!(!text_contains_term("我在用别的工具", "窝太普"));
+    }
+
+    #[test]
+    fn test_text_contains_term_space_variant() {
+        // Segmentation variants: "vo type" ↔ "votype" (≥5 condensed chars)
+        assert!(text_contains_term("open vo type now", "votype"));
+        assert!(text_contains_term("votype rocks", "vo type"));
+        // Short condensed terms must NOT fall back to loose matching
+        assert!(!text_contains_term("a b c d", "ab"));
+    }
+
+    #[test]
+    fn test_scan_local_match_alias_and_target() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("hotwords.db");
+        init_hotword_db(&db_path);
+
+        let conn = Connection::open(&db_path).expect("open temp db");
+        conn.execute(
+            "INSERT INTO hotwords (target, originals, category, scenarios, confidence, user_override, use_count, recent_use_count, app_usage_stats, scenario_usage_stats, false_positive_count, created_at, status, source)
+             VALUES (?1, ?2, 'term', '[\"work\"]', 0.5, 0, 0, 0, '{}', '{}', 0, 2, 'active', 'manual')",
+            params!["八戒", serde_json::to_string(&vec!["八哥"]).unwrap()],
+        )
+        .expect("insert alias hotword");
+
+        let manager = HotwordManager::new(db_path);
+
+        let scan = manager
+            .scan_local_match(HotwordScenario::Work, "让八哥模型跑一下")
+            .expect("scan alias");
+        assert!(scan.alias_hit);
+        assert!(!scan.target_hit);
+
+        let scan = manager
+            .scan_local_match(HotwordScenario::Work, "Votype is great")
+            .expect("scan target");
+        assert!(!scan.alias_hit);
+        assert!(scan.target_hit);
+
+        let scan = manager
+            .scan_local_match(HotwordScenario::Work, "完全无关的内容")
+            .expect("scan none");
+        assert!(!scan.alias_hit);
+        assert!(!scan.target_hit);
+    }
+
+    #[test]
+    fn test_correction_pairs_input_hits_survive_truncation() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("hotwords.db");
+        init_hotword_db(&db_path);
+
+        let conn = Connection::open(&db_path).expect("open temp db");
+        // 19 high-star pairs (use_count >= 5 → ★★★) that do NOT match the input
+        for idx in 0..19 {
+            conn.execute(
+                "INSERT INTO hotwords (target, originals, category, scenarios, confidence, user_override, use_count, recent_use_count, app_usage_stats, scenario_usage_stats, false_positive_count, created_at, status, source)
+                 VALUES (?1, ?2, 'term', '[\"work\"]', 0.5, 0, 10, 0, '{}', '{}', 0, ?3, 'active', 'manual')",
+                params![
+                    format!("Target{}", idx),
+                    serde_json::to_string(&vec![format!("误词{}", idx)]).unwrap(),
+                    10 + idx as i64
+                ],
+            )
+            .expect("insert high-star hotword");
+        }
+        // 1 low-star pair (use_count 0 → ★) whose original DOES appear in input
+        conn.execute(
+            "INSERT INTO hotwords (target, originals, category, scenarios, confidence, user_override, use_count, recent_use_count, app_usage_stats, scenario_usage_stats, false_positive_count, created_at, status, source)
+             VALUES (?1, ?2, 'term', '[\"work\"]', 0.5, 0, 0, 0, '{}', '{}', 0, 99, 'active', 'manual')",
+            params!["真命中", serde_json::to_string(&vec!["特殊误词"]).unwrap()],
+        )
+        .expect("insert needle hotword");
+
+        let manager = HotwordManager::new(db_path);
+        let input = "这句话里有特殊误词需要修正";
+        let injection = manager
+            .build_contextual_injection(HotwordScenario::Work, input, input, None)
+            .expect("build injection");
+
+        assert!(injection.correction_pairs.len() <= 15);
+        // The input-matching pair must survive the cap despite its low star rating.
+        assert!(injection
+            .correction_pairs
+            .iter()
+            .any(|p| p.original == "特殊误词" && p.target == "真命中"));
+        // And it must be ordered before non-matching pairs.
+        assert_eq!(injection.correction_pairs[0].original, "特殊误词");
     }
 
     #[test]

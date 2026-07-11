@@ -45,43 +45,38 @@ Please process the data through these 3 hidden layers before outputting JSON:
 
 # Output Protocol (JSON Only)
 
-Please output a strictly valid JSON object. Do not include markdown formatting like ```json.
+Output one strictly valid JSON object — no markdown fences, no comments, no extra text. Shape:
 
 {
 "meta": {
 "date": "${current_date}",
-"focus_score": 0-10, // Integer: calculated based on topic consistency
-"primary_mood": "String" // e.g., "Deep Focus", "Scattered", "Frustrated"
+"focus_score": 7,
+"primary_mood": "Deep Focus"
 },
-
 "executive_summary": {
 "narrative": "A 3-sentence high-level summary suitable for a CEO's daily briefing. Focus on OUTCOMES, not just actions.",
 "alignment_check": "How well did today's activities align with the projects in ${key_projects}? (e.g., 'High alignment with Project A, but neglected Project B')"
 },
-
 "deep_dive_timeline": [
 {
-"time_window": "HH:MM - HH:MM",
-"category": "Deep Work | Communication | Logistics | Learning",
-"project_tag": "String (from ${key_projects} or 'Misc')",
+"time_window": "09:00 - 11:30",
+"category": "Deep Work",
+"project_tag": "AI Agent Dev",
 "activity_reconstructed": "The corrected, professional description of what happened.",
 "original_intent": "What was the user trying to achieve? (e.g., 'Unblocking a teammate')"
 }
-// Group adjacent similar entries into one block
 ],
-
 "productivity_audit": {
 "context_switching_alert": {
-"detected": boolean,
-"severity": "Low/Medium/High",
+"detected": true,
+"severity": "High",
 "comment": "If High, identify the trigger (e.g., 'You were frequently interrupted by WeChat while trying to write in Notion')."
 },
 "energy_map": {
-"peak_hour": "HH:MM",
-"slump_hour": "HH:MM"
+"peak_hour": "10:00",
+"slump_hour": "15:00"
 }
 },
-
 "knowledge_graph_updates": {
 "new_ideas": [
 "Extract any raw ideas or insights that should be saved to a permanent knowledge base."
@@ -91,3 +86,11 @@ Please output a strictly valid JSON object. Do not include markdown formatting l
 ]
 }
 }
+
+Field rules:
+
+- `focus_score`: integer 0-10, based on topic consistency
+- `primary_mood`: short label, e.g. "Deep Focus", "Scattered", "Frustrated"
+- `deep_dive_timeline[].category`: one of "Deep Work" | "Communication" | "Logistics" | "Learning"
+- `deep_dive_timeline[].project_tag`: a project from ${key_projects}, or "Misc"; group adjacent similar entries into one block
+- `context_switching_alert.detected`: boolean; `severity`: one of "Low" | "Medium" | "High"

@@ -742,6 +742,10 @@ pub fn run() {
             DEBUG_LOG_ROUTING.store(settings.debug_log_routing, Ordering::Relaxed);
             DEBUG_LOG_TRANSCRIPTION.store(settings.debug_log_transcription, Ordering::Relaxed);
 
+            // Prime the overlay-enabled cache before any recording can emit
+            // mic-level events (see overlay::emit_levels — WebKit leak fix).
+            overlay::refresh_overlay_enabled_cache(&settings);
+
             let app_handle = app.handle().clone();
 
             initialize_core_logic(&app_handle);

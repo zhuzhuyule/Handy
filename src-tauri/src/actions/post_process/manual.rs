@@ -142,6 +142,8 @@ pub async fn post_process_text_with_prompt(
     };
 
     // Use PromptBuilder for unified variable processing
+    let detected_language =
+        super::pipeline::detect_language_heuristic(transcription, &settings.app_language);
     let built = super::prompt_builder::PromptBuilder::new(prompt, transcription)
         .streaming_transcription(streaming_transcription)
         .app_name(app_name.as_deref())
@@ -150,6 +152,7 @@ pub async fn post_process_text_with_prompt(
         .hotword_injection(hotword_injection)
         .resolved_references(refs_content)
         .app_language(&settings.app_language)
+        .detected_language(Some(&detected_language))
         .injection_policy(super::prompt_builder::InjectionPolicy::for_post_process(
             settings,
         ))

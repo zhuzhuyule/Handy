@@ -64,15 +64,23 @@ impl OnlineAsrClient {
         );
 
         log::info!(
-            "Online ASR request: url={}, model={}, language={:?}, audio_bytes={}",
+            "Online ASR request: url={}, model={}, language={:?}, audio_bytes={}, use_proxy={}",
             url,
             model_id,
             language,
-            audio_bytes.len()
+            audio_bytes.len(),
+            provider.use_proxy
         );
-        let client = crate::http_client::build_blocking_http_client(None, self.timeout)
-            .map_err(|e| anyhow::anyhow!(e))
-            .context("failed to build HTTP client")?;
+        // Per-provider proxy policy: providers with use_proxy=false connect
+        // directly (no system-proxy inheritance), so a domestic endpoint is not
+        // dragged through a proxy the user set only for overseas providers.
+        let client = crate::http_client::build_blocking_http_client_with_policy(
+            None,
+            provider.use_proxy,
+            self.timeout,
+        )
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("failed to build HTTP client")?;
 
         let mut form = multipart::Form::new()
             .part(
@@ -92,21 +100,38 @@ impl OnlineAsrClient {
             request = request.bearer_auth(key.trim());
         }
 
-        let response = request
-            .send()
-            .context("failed to send transcription request")?;
+        let req_start = std::time::Instant::now();
+        let response = request.send().with_context(|| {
+            format!(
+                "failed to send transcription request to {} after {}ms",
+                url,
+                req_start.elapsed().as_millis()
+            )
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response
                 .text()
                 .unwrap_or_else(|_| "Failed to read body".to_string());
+            log::warn!(
+                "Online ASR failed: model={}, status={}, elapsed={}ms",
+                model_id,
+                status,
+                req_start.elapsed().as_millis()
+            );
             return Err(anyhow!(
                 "remote transcription failed ({}): {}",
                 status,
                 text
             ));
         }
+        log::info!(
+            "Online ASR response: model={}, status={}, elapsed={}ms",
+            model_id,
+            response.status(),
+            req_start.elapsed().as_millis()
+        );
 
         let body: serde_json::Value = response
             .json()

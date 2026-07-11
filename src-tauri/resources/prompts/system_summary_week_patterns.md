@@ -17,14 +17,12 @@ ${voice_stream_table}
 
 ## 输出要求（只输出 JSON）
 
-```json
 {
-  "patterns": {
-    "title": "模式洞察",
-    "items": ["时间使用模式观察", "工作习惯观察"]
-  }
+"patterns": {
+"title": "模式洞察",
+"items": ["时间使用模式观察", "工作习惯观察"]
 }
-```
+}
 
 ## 分析要求
 

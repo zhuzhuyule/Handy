@@ -46,27 +46,25 @@ ${voice_stream_table}
 
 ## 输出格式
 
-```json
 {
-  "vocabulary_extracted": {
-    "title": "新词提取",
-    "items": [
-      {
-        "word": "OAuth 2.0",
-        "category": "term",
-        "originals": ["奥斯", "欧斯"],
-        "confidence": 95
-      },
-      {
-        "word": "张三",
-        "category": "person",
-        "originals": [],
-        "confidence": 88
-      }
-    ]
-  }
+"vocabulary_extracted": {
+"title": "新词提取",
+"items": [
+{
+"word": "OAuth 2.0",
+"category": "term",
+"originals": ["奥斯", "欧斯"],
+"confidence": 95
+},
+{
+"word": "张三",
+"category": "person",
+"originals": [],
+"confidence": 88
 }
-```
+]
+}
+}
 
 ## 字段说明
 

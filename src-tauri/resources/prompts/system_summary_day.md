@@ -22,57 +22,55 @@ ${voice_stream_table}
 
 请生成如下 JSON 格式的完整日报分析：
 
-```json
 {
-  "summary": {
-    "title": "今日概览",
-    "content": "2-3 句话的深度概括，包含核心主题、关键进展和模式特征"
-  },
-  "activities": {
-    "title": "活动时间线",
-    "items": [
-      "09:15-10:30 具体活动描述（包含任务名称、使用的工具、处理的内容）",
-      "10:30-11:45 另一个具体活动（要详细到可以让用户回忆起当时在做什么）"
-    ]
-  },
-  "highlights": {
-    "title": "关键事件",
-    "items": [
-      "【决策】14:30 确定使用 OAuth 2.0 + JWT 的认证方案，放弃了自建 session 管理",
-      "【突破】16:45 解决了困扰两天的 CORS 跨域问题",
-      "【卡点】下午花了较多时间研究 refresh token 的过期处理机制"
-    ]
-  },
-  "work_focus": {
-    "title": "工作专注度",
-    "items": ["主要工作领域或项目", "技术栈和工具使用"]
-  },
-  "focus_assessment": {
-    "title": "专注度评估",
-    "score": 7,
-    "comment": "基于上下文切换频率和活动连续性的评估说明（0-10分）"
-  },
-  "todos_extracted": {
-    "title": "To Do List",
-    "items": [
-      {
-        "id": "T1",
-        "text": "明天联系张三确认接口",
-        "status": "unknown"
-      },
-      {
-        "id": "T2",
-        "text": "学习 refresh token",
-        "status": "unknown"
-      }
-    ]
-  },
-  "vocabulary_extracted": {
-    "title": "词汇提取",
-    "items": ["OAuth 2.0", "JWT", "CORS"]
-  }
+"summary": {
+"title": "今日概览",
+"content": "2-3 句话的深度概括，包含核心主题、关键进展和模式特征"
+},
+"activities": {
+"title": "活动时间线",
+"items": [
+"09:15-10:30 具体活动描述（包含任务名称、使用的工具、处理的内容）",
+"10:30-11:45 另一个具体活动（要详细到可以让用户回忆起当时在做什么）"
+]
+},
+"highlights": {
+"title": "关键事件",
+"items": [
+"【决策】14:30 确定使用 OAuth 2.0 + JWT 的认证方案，放弃了自建 session 管理",
+"【突破】16:45 解决了困扰两天的 CORS 跨域问题",
+"【卡点】下午花了较多时间研究 refresh token 的过期处理机制"
+]
+},
+"work_focus": {
+"title": "工作专注度",
+"items": ["主要工作领域或项目", "技术栈和工具使用"]
+},
+"focus_assessment": {
+"title": "专注度评估",
+"score": 7,
+"comment": "基于上下文切换频率和活动连续性的评估说明（0-10分）"
+},
+"todos_extracted": {
+"title": "To Do List",
+"items": [
+{
+"id": "T1",
+"text": "明天联系张三确认接口",
+"status": "unknown"
+},
+{
+"id": "T2",
+"text": "学习 refresh token",
+"status": "unknown"
 }
-```
+]
+},
+"vocabulary_extracted": {
+"title": "词汇提取",
+"items": ["OAuth 2.0", "JWT", "CORS"]
+}
+}
 
 ---
 

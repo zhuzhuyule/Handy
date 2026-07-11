@@ -17,14 +17,12 @@ ${voice_stream_table}
 
 ## 输出要求（只输出 JSON）
 
-```json
 {
-  "communication_patterns": {
-    "title": "沟通模式",
-    "items": ["主要使用的应用和场景", "沟通风格观察"]
-  }
+"communication_patterns": {
+"title": "沟通模式",
+"items": ["主要使用的应用和场景", "沟通风格观察"]
 }
-```
+}
 
 ## 分析要求
 

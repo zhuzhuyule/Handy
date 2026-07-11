@@ -333,7 +333,9 @@ pub async fn generate_task_clusters(
     let (provider, model, cached_model_id) = resolve_clustering_target(&settings)?;
 
     // --- Step 6: Call LLM with retry ----------------------------------------
-    let system_prompts = vec![rendered];
+    // Split into system (instructions) + user (the data). Gateways that proxy
+    // OpenAI reject system-only requests with "No user query found in messages".
+    let (system_prompts, user_message) = split_clustering_prompt(&rendered);
     let llm_result = execute_llm_request_with_retry(
         app_handle,
         &settings,
@@ -341,7 +343,7 @@ pub async fn generate_task_clusters(
         &model,
         cached_model_id.as_deref(),
         &system_prompts,
-        None,
+        Some(&user_message),
         None,
         None,
     )
@@ -370,7 +372,7 @@ pub async fn generate_task_clusters(
                 &model,
                 cached_model_id.as_deref(),
                 &strict_system,
-                None,
+                Some(&user_message),
                 None,
                 None,
             )
@@ -511,6 +513,29 @@ fn strip_conditional_block(rendered: &str, block_name: &str, is_empty: bool) -> 
     }
 }
 
+/// Split the rendered clustering prompt into (system instructions, user query).
+///
+/// The prompt is one markdown doc: instructions (role, principles, output
+/// format) followed by an `## Input` section that holds the actual data
+/// (DATE / ENTRIES / …). Some OpenAI-compatible gateways reject a request
+/// whose only message is a system message ("No user query found in
+/// messages"), so the data section is sent as the user message.
+///
+/// If the `## Input` marker is absent — e.g. a user-customized prompt — the
+/// whole rendered text becomes the user message. Every chat API accepts a
+/// user-only request, so this fallback is always valid.
+fn split_clustering_prompt(rendered: &str) -> (Vec<String>, String) {
+    const INPUT_MARKER: &str = "## Input";
+    if let Some(idx) = rendered.find(INPUT_MARKER) {
+        let system = rendered[..idx].trim_end().to_string();
+        let user = rendered[idx..].trim().to_string();
+        if !system.is_empty() && !user.is_empty() {
+            return (vec![system], user);
+        }
+    }
+    (Vec::new(), rendered.trim().to_string())
+}
+
 /// Sum duration_ms for entries whose ids appear in `ids`.
 fn compute_total_duration_ms(ids: &[i64], entries: &[ClusterableEntry]) -> i64 {
     let id_set: std::collections::HashSet<i64> = ids.iter().copied().collect();
@@ -529,6 +554,28 @@ mod tests {
     fn test_extract_json_array_plain() {
         let raw = "[{\"title\":\"a\"}]";
         assert_eq!(extract_json_array(raw), "[{\"title\":\"a\"}]");
+    }
+
+    #[test]
+    fn test_split_clustering_prompt_separates_input_section() {
+        let rendered =
+            "# Task Clustering\nYou are an assistant.\n\n## Input\n\nDATE: 2026-06-15\nENTRIES (2):\n- a\n- b";
+        let (system, user) = split_clustering_prompt(rendered);
+        assert_eq!(system.len(), 1);
+        assert!(system[0].contains("You are an assistant"));
+        assert!(!system[0].contains("## Input"));
+        assert!(user.starts_with("## Input"));
+        assert!(user.contains("DATE: 2026-06-15"));
+    }
+
+    #[test]
+    fn test_split_clustering_prompt_falls_back_to_user_only() {
+        // Customized prompt without the `## Input` marker → everything is the
+        // user message, system is empty (still a valid request).
+        let rendered = "Cluster these entries: a, b, c. Return JSON.";
+        let (system, user) = split_clustering_prompt(rendered);
+        assert!(system.is_empty());
+        assert_eq!(user, "Cluster these entries: a, b, c. Return JSON.");
     }
 
     #[test]

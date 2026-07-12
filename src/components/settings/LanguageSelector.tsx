@@ -32,9 +32,13 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
     if (!currentModel) return "noModel";
     if (!currentModelInfo) return "unknownModel";
     if (unsupportedModels.includes(currentModel)) return "unsupportedModel";
-    if (currentModelInfo.engine_type === "Whisper") return "whisper";
-    if (currentModelInfo.engine_type === "Parakeet") return "parakeet";
-    if (currentModelInfo.engine_type === "SenseVoice") return "sensevoice";
+    // All models now share the transcribe.cpp engine, so infer the family from
+    // the model id to preserve per-family language handling.
+    const modelId = currentModelInfo.id.toLowerCase();
+    if (modelId.includes("whisper")) return "whisper";
+    if (modelId.includes("parakeet")) return "parakeet";
+    if (modelId.includes("sensevoice") || modelId.includes("sense-voice"))
+      return "sensevoice";
     return "unsupportedEngine";
   })() as
     | "noModel"

@@ -43,27 +43,22 @@ export const getModeKey = (m: ModelInfo): ModeKey =>
   m.id.startsWith("punct-") ? "punctuation" : "asr";
 
 /**
- * Get the type key for a model
+ * Get the type key for a model.
+ *
+ * All local models now run through the unified transcribe.cpp engine, so the
+ * family is inferred from the model id/name rather than the engine type.
  */
 export const getTypeKey = (m: ModelInfo): TypeKey => {
-  switch (m.engine_type) {
-    case "Whisper":
-      return "whisper";
-    case "Parakeet":
-      return "parakeet";
-    case "Moonshine":
-    case "MoonshineStreaming":
-      return "moonshine";
-    case "SenseVoice":
-      return "sensevoice";
-    case "ZipformerTransducer":
-    case "ZipformerCtc":
-      return "zipformer";
-    case "Paraformer":
-      return m.id.startsWith("punct-") ? "other" : "paraformer";
-    default:
-      return "other";
-  }
+  const id = (m.id ?? "").toLowerCase();
+  if (id.startsWith("punct-")) return "other";
+  if (id.includes("whisper")) return "whisper";
+  if (id.includes("parakeet")) return "parakeet";
+  if (id.includes("moonshine")) return "moonshine";
+  if (id.includes("sensevoice") || id.includes("sense-voice"))
+    return "sensevoice";
+  if (id.includes("zipformer")) return "zipformer";
+  if (id.includes("paraformer")) return "paraformer";
+  return "other";
 };
 
 /**

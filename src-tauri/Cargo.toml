@@ -69,7 +69,6 @@ chrono = "0.4"
 rusqlite = { version = "0.37", features = ["bundled"] }
 tar = "0.4.44"
 flate2 = "1.0"
-transcribe-rs = { git = "https://github.com/zhuzhuyule/transcribe-rs", branch = "main", features = ["all"] }
 active-win-pos-rs = "0.9.1"
 ferrous-opencc = "0.2.3"
 handy-keys = "0.2.1"

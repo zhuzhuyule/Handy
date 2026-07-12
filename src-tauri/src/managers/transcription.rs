@@ -1,6 +1,6 @@
 use crate::audio_toolkit::filter_transcription_output;
 use crate::audio_toolkit::text::apply_custom_words;
-use crate::managers::model::{EngineType, ModelManager};
+use crate::managers::model::ModelManager;
 use crate::settings::{get_settings, ModelUnloadTimeout};
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -11,18 +11,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
-use transcribe_rs::{
-    onnx::{
-        moonshine::{MoonshineModel, MoonshineVariant, StreamingModel},
-        paraformer::ParaformerModel,
-        parakeet::{ParakeetModel, ParakeetParams, TimestampGranularity},
-        sense_voice::{SenseVoiceModel, SenseVoiceParams},
-        zipformer_ctc::ZipformerCtcModel,
-        zipformer_transducer::ZipformerTransducerModel,
-        Quantization,
-    },
-    whisper_cpp::{WhisperEngine, WhisperInferenceParams},
-    SpeechModel, TranscribeOptions,
+use transcribe_cpp::{
+    DeviceType, Feature, Model, RunExtension, RunOptions, Session, Task, TimestampKind,
+    WhisperRunOptions,
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -33,15 +24,28 @@ pub struct ModelStateEvent {
     pub error: Option<String>,
 }
 
+/// A loaded transcribe.cpp engine: the session plus the model capabilities we
+/// need at run time. `Session` keeps the underlying `Model` alive internally.
+struct CppEngine {
+    session: Session,
+    /// Finest timestamp granularity the model supports (fed to `RunOptions`).
+    max_timestamp_kind: TimestampKind,
+    /// Whether the model accepts a whisper-style initial prompt (custom words).
+    supports_initial_prompt: bool,
+}
+
 enum LoadedEngine {
-    Whisper(WhisperEngine),
-    Parakeet(ParakeetModel),
-    Moonshine(MoonshineModel),
-    MoonshineStreaming(StreamingModel),
-    SenseVoice(SenseVoiceModel),
-    Paraformer(ParaformerModel),
-    ZipformerTransducer(ZipformerTransducerModel),
-    ZipformerCtc(ZipformerCtcModel),
+    TranscribeCpp(CppEngine),
+}
+
+/// Normalize the user's selected language into the ISO hint transcribe.cpp
+/// expects: `auto` → autodetect (`None`), Chinese script variants → `zh`.
+fn normalize_language(selected: &str) -> Option<String> {
+    match selected {
+        "auto" | "" => None,
+        "zh-Hans" | "zh-Hant" => Some("zh".to_string()),
+        other => Some(other.to_string()),
+    }
 }
 
 fn is_sentence_ending_punctuation(ch: char) -> bool {
@@ -123,7 +127,6 @@ pub struct TranscriptionManager {
     watcher_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
-    punct_model: Arc<Mutex<Option<transcribe_rs::punct::PunctModel>>>,
     engine_in_use: Arc<AtomicBool>,
 }
 
@@ -150,7 +153,6 @@ impl TranscriptionManager {
             watcher_handle: Arc::new(Mutex::new(None)),
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
-            punct_model: Arc::new(Mutex::new(None)),
             engine_in_use: Arc::new(AtomicBool::new(false)),
         };
 
@@ -319,175 +321,41 @@ impl TranscriptionManager {
 
         let model_path = self.model_manager.get_model_path(model_id)?;
 
-        // Create appropriate engine based on model type
-        let loaded_engine = match model_info.engine_type {
-            EngineType::Whisper => {
-                let engine = WhisperEngine::load(&model_path).map_err(|e| {
-                    let error_msg = format!("Failed to load whisper model {}: {}", model_id, e);
-                    let _ = self.app_handle.emit(
-                        "model-state-changed",
-                        ModelStateEvent {
-                            event_type: "loading_failed".to_string(),
-                            model_id: Some(model_id.to_string()),
-                            model_name: Some(model_info.name.clone()),
-                            error: Some(error_msg.clone()),
-                        },
-                    );
-                    anyhow::anyhow!(error_msg)
-                })?;
-                LoadedEngine::Whisper(engine)
-            }
-            EngineType::Parakeet => {
-                let engine =
-                    ParakeetModel::load(&model_path, &Quantization::Int8).map_err(|e| {
-                        let error_msg =
-                            format!("Failed to load parakeet model {}: {}", model_id, e);
-                        let _ = self.app_handle.emit(
-                            "model-state-changed",
-                            ModelStateEvent {
-                                event_type: "loading_failed".to_string(),
-                                model_id: Some(model_id.to_string()),
-                                model_name: Some(model_info.name.clone()),
-                                error: Some(error_msg.clone()),
-                            },
-                        );
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                LoadedEngine::Parakeet(engine)
-            }
-            EngineType::Moonshine => {
-                let engine =
-                    MoonshineModel::load(&model_path, MoonshineVariant::Base, &Quantization::FP32)
-                        .map_err(|e| {
-                            let error_msg =
-                                format!("Failed to load moonshine model {}: {}", model_id, e);
-                            let _ = self.app_handle.emit(
-                                "model-state-changed",
-                                ModelStateEvent {
-                                    event_type: "loading_failed".to_string(),
-                                    model_id: Some(model_id.to_string()),
-                                    model_name: Some(model_info.name.clone()),
-                                    error: Some(error_msg.clone()),
-                                },
-                            );
-                            anyhow::anyhow!(error_msg)
-                        })?;
-                LoadedEngine::Moonshine(engine)
-            }
-            EngineType::MoonshineStreaming => {
-                let engine =
-                    StreamingModel::load(&model_path, 4, &Quantization::FP32).map_err(|e| {
-                        let error_msg = format!(
-                            "Failed to load moonshine streaming model {}: {}",
-                            model_id, e
-                        );
-                        let _ = self.app_handle.emit(
-                            "model-state-changed",
-                            ModelStateEvent {
-                                event_type: "loading_failed".to_string(),
-                                model_id: Some(model_id.to_string()),
-                                model_name: Some(model_info.name.clone()),
-                                error: Some(error_msg.clone()),
-                            },
-                        );
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                LoadedEngine::MoonshineStreaming(engine)
-            }
-            EngineType::SenseVoice => {
-                let engine =
-                    SenseVoiceModel::load(&model_path, &Quantization::Int8).map_err(|e| {
-                        let error_msg =
-                            format!("Failed to load SenseVoice model {}: {}", model_id, e);
-                        let _ = self.app_handle.emit(
-                            "model-state-changed",
-                            ModelStateEvent {
-                                event_type: "loading_failed".to_string(),
-                                model_id: Some(model_id.to_string()),
-                                model_name: Some(model_info.name.clone()),
-                                error: Some(error_msg.clone()),
-                            },
-                        );
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                LoadedEngine::SenseVoice(engine)
-            }
-            EngineType::Paraformer => {
-                let engine =
-                    ParaformerModel::load(&model_path, &Quantization::FP32).map_err(|e| {
-                        let error_msg =
-                            format!("Failed to load Paraformer model {}: {}", model_id, e);
-                        let _ = self.app_handle.emit(
-                            "model-state-changed",
-                            ModelStateEvent {
-                                event_type: "loading_failed".to_string(),
-                                model_id: Some(model_id.to_string()),
-                                model_name: Some(model_info.name.clone()),
-                                error: Some(error_msg.clone()),
-                            },
-                        );
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                LoadedEngine::Paraformer(engine)
-            }
-            EngineType::ZipformerTransducer => {
-                let has_int8 = std::fs::read_dir(&model_path)
-                    .map(|entries| {
-                        entries.filter_map(|e| e.ok()).any(|e| {
-                            let name = e.file_name().to_string_lossy().to_string();
-                            name.starts_with("encoder")
-                                && name.contains("int8")
-                                && name.ends_with(".onnx")
-                        })
-                    })
-                    .unwrap_or(false);
-                let quantization = if has_int8 {
-                    Quantization::Int8
-                } else {
-                    Quantization::FP32
-                };
-                let engine =
-                    ZipformerTransducerModel::load(&model_path, &quantization).map_err(|e| {
-                        let error_msg = format!(
-                            "Failed to load Zipformer Transducer model {}: {}",
-                            model_id, e
-                        );
-                        let _ = self.app_handle.emit(
-                            "model-state-changed",
-                            ModelStateEvent {
-                                event_type: "loading_failed".to_string(),
-                                model_id: Some(model_id.to_string()),
-                                model_name: Some(model_info.name.clone()),
-                                error: Some(error_msg.clone()),
-                            },
-                        );
-                        anyhow::anyhow!(error_msg)
-                    })?;
-                LoadedEngine::ZipformerTransducer(engine)
-            }
-            EngineType::ZipformerCtc => {
-                let quantization = if model_path.join("model.int8.onnx").exists() {
-                    Quantization::Int8
-                } else {
-                    Quantization::FP32
-                };
-                let engine = ZipformerCtcModel::load(&model_path, &quantization).map_err(|e| {
-                    let error_msg =
-                        format!("Failed to load Zipformer CTC model {}: {}", model_id, e);
-                    let _ = self.app_handle.emit(
-                        "model-state-changed",
-                        ModelStateEvent {
-                            event_type: "loading_failed".to_string(),
-                            model_id: Some(model_id.to_string()),
-                            model_name: Some(model_info.name.clone()),
-                            error: Some(error_msg.clone()),
-                        },
-                    );
-                    anyhow::anyhow!(error_msg)
-                })?;
-                LoadedEngine::ZipformerCtc(engine)
-            }
+        // Load the GGUF model through the unified transcribe.cpp engine.
+        let emit_load_failure = |e: &dyn std::fmt::Display| -> anyhow::Error {
+            let error_msg = format!("Failed to load model {}: {}", model_id, e);
+            let _ = self.app_handle.emit(
+                "model-state-changed",
+                ModelStateEvent {
+                    event_type: "loading_failed".to_string(),
+                    model_id: Some(model_id.to_string()),
+                    model_name: Some(model_info.name.clone()),
+                    error: Some(error_msg.clone()),
+                },
+            );
+            anyhow::anyhow!(error_msg)
         };
+
+        let model = Model::load(&model_path).map_err(|e| emit_load_failure(&e))?;
+        let caps = model.capabilities();
+        let max_timestamp_kind = caps.max_timestamp_kind;
+        let supports_initial_prompt = model.supports(Feature::InitialPrompt);
+        let session = model.session().map_err(|e| emit_load_failure(&e))?;
+
+        info!(
+            "Loaded model '{}' (arch={}, backend={}, max_ts={:?}, initial_prompt={})",
+            model_id,
+            model.arch(),
+            model.backend(),
+            max_timestamp_kind,
+            supports_initial_prompt
+        );
+
+        let loaded_engine = LoadedEngine::TranscribeCpp(CppEngine {
+            session,
+            max_timestamp_kind,
+            supports_initial_prompt,
+        });
 
         // Update the current engine and model ID
         {
@@ -620,6 +488,43 @@ impl TranscriptionManager {
         // Get current settings for configuration
         let settings = get_settings(&self.app_handle);
 
+        // Read the cached model capabilities before taking the engine out.
+        let (max_timestamp_kind, supports_initial_prompt) = {
+            let guard = self.lock_engine();
+            match guard.as_ref() {
+                Some(LoadedEngine::TranscribeCpp(c)) => {
+                    (c.max_timestamp_kind, c.supports_initial_prompt)
+                }
+                None => {
+                    return Err(anyhow::anyhow!("Model is not loaded for transcription."));
+                }
+            }
+        };
+
+        // Custom words are injected as a whisper-style initial prompt when the
+        // model supports it; otherwise they are applied via fuzzy correction on
+        // the raw output further down. Track which path we took here.
+        let custom_words_as_prompt = supports_initial_prompt && !settings.custom_words.is_empty();
+
+        let run_options = RunOptions {
+            task: if settings.translate_to_english {
+                Task::Translate
+            } else {
+                Task::Transcribe
+            },
+            timestamps: max_timestamp_kind,
+            language: normalize_language(&settings.selected_language),
+            family: if custom_words_as_prompt {
+                Some(RunExtension::Whisper(WhisperRunOptions {
+                    initial_prompt: Some(settings.custom_words.join(", ")),
+                    ..Default::default()
+                }))
+            } else {
+                None
+            },
+            ..Default::default()
+        };
+
         // Perform transcription with the appropriate engine.
         // We use catch_unwind to prevent engine panics from poisoning the mutex,
         // which would make the app hang indefinitely on subsequent operations.
@@ -641,88 +546,13 @@ impl TranscriptionManager {
             drop(engine_guard);
 
             let transcribe_result = catch_unwind(AssertUnwindSafe(
-                || -> Result<transcribe_rs::TranscriptionResult> {
+                || -> Result<transcribe_cpp::Transcript> {
                     match &mut engine {
-                        LoadedEngine::Whisper(whisper_engine) => {
-                            let whisper_language = if settings.selected_language == "auto" {
-                                None
-                            } else {
-                                let normalized = if settings.selected_language == "zh-Hans"
-                                    || settings.selected_language == "zh-Hant"
-                                {
-                                    "zh".to_string()
-                                } else {
-                                    settings.selected_language.clone()
-                                };
-                                Some(normalized)
-                            };
-
-                            let params = WhisperInferenceParams {
-                                language: whisper_language,
-                                translate: settings.translate_to_english,
-                                initial_prompt: if settings.custom_words.is_empty() {
-                                    None
-                                } else {
-                                    Some(settings.custom_words.join(", "))
-                                },
-                                ..Default::default()
-                            };
-
-                            whisper_engine
-                                .transcribe_with(&audio, &params)
-                                .map_err(|e| anyhow::anyhow!("Whisper transcription failed: {}", e))
+                        LoadedEngine::TranscribeCpp(c) => {
+                            c.session.run(&audio, &run_options).map_err(|e| {
+                                anyhow::anyhow!("transcribe.cpp transcription failed: {}", e)
+                            })
                         }
-                        LoadedEngine::Parakeet(parakeet_engine) => {
-                            let params = ParakeetParams {
-                                timestamp_granularity: Some(TimestampGranularity::Segment),
-                                ..Default::default()
-                            };
-                            parakeet_engine
-                                .transcribe_with(&audio, &params)
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Parakeet transcription failed: {}", e)
-                                })
-                        }
-                        LoadedEngine::Moonshine(moonshine_engine) => moonshine_engine
-                            .transcribe(&audio, &TranscribeOptions::default())
-                            .map_err(|e| anyhow::anyhow!("Moonshine transcription failed: {}", e)),
-                        LoadedEngine::MoonshineStreaming(streaming_engine) => streaming_engine
-                            .transcribe(&audio, &TranscribeOptions::default())
-                            .map_err(|e| {
-                                anyhow::anyhow!("Moonshine streaming transcription failed: {}", e)
-                            }),
-                        LoadedEngine::SenseVoice(sense_voice_engine) => {
-                            let language = match settings.selected_language.as_str() {
-                                "zh" | "zh-Hans" | "zh-Hant" => Some("zh".to_string()),
-                                "en" => Some("en".to_string()),
-                                "ja" => Some("ja".to_string()),
-                                "ko" => Some("ko".to_string()),
-                                "yue" => Some("yue".to_string()),
-                                _ => None,
-                            };
-                            let params = SenseVoiceParams {
-                                language,
-                                use_itn: Some(true),
-                            };
-                            sense_voice_engine
-                                .transcribe_with(&audio, &params)
-                                .map_err(|e| {
-                                    anyhow::anyhow!("SenseVoice transcription failed: {}", e)
-                                })
-                        }
-                        LoadedEngine::Paraformer(paraformer_engine) => paraformer_engine
-                            .transcribe(&audio, &TranscribeOptions::default())
-                            .map_err(|e| anyhow::anyhow!("Paraformer transcription failed: {}", e)),
-                        LoadedEngine::ZipformerTransducer(zipformer_engine) => zipformer_engine
-                            .transcribe(&audio, &TranscribeOptions::default())
-                            .map_err(|e| {
-                                anyhow::anyhow!("Zipformer Transducer transcription failed: {}", e)
-                            }),
-                        LoadedEngine::ZipformerCtc(zipformer_engine) => zipformer_engine
-                            .transcribe(&audio, &TranscribeOptions::default())
-                            .map_err(|e| {
-                                anyhow::anyhow!("Zipformer CTC transcription failed: {}", e)
-                            }),
                     }
                 },
             ));
@@ -789,14 +619,8 @@ impl TranscriptionManager {
         );
 
         // Apply word correction if custom words are configured.
-        // Skip for Whisper models since custom words are already passed as initial_prompt.
-        let is_whisper = self
-            .model_manager
-            .get_model_info(&settings.selected_model)
-            .map(|info| matches!(info.engine_type, EngineType::Whisper))
-            .unwrap_or(false);
-
-        let corrected_result = if !settings.custom_words.is_empty() && !is_whisper {
+        // Skip when the words were already injected as an initial prompt above.
+        let corrected_result = if !settings.custom_words.is_empty() && !custom_words_as_prompt {
             apply_custom_words(
                 &raw_text,
                 &settings.custom_words,
@@ -813,71 +637,9 @@ impl TranscriptionManager {
             &settings.custom_filler_words,
         );
 
-        // Punctuation post-processing: when enabled, always apply the CT-Transformer
-        // punct model to format the text with proper punctuation. The user controls this
-        // via a toggle — turning it on forces re-punctuation regardless of whether the
-        // engine already produced punctuation.
-        let final_result = if settings.punctuation_enabled && !filtered_result.trim().is_empty() {
-            if should_skip_auto_punctuation(&filtered_result) {
-                debug!(
-                    "Skipping auto-punctuation because transcript already looks punctuated: {}",
-                    filtered_result
-                );
-                filtered_result
-            } else {
-                let punct_model_id = &settings.punctuation_model;
-                if !punct_model_id.is_empty() {
-                    if let Some(model_info) = self.model_manager.get_model_info(punct_model_id) {
-                        if model_info.is_downloaded {
-                            match self.model_manager.get_model_path(punct_model_id) {
-                                Ok(model_dir) => {
-                                    let mut punct_guard =
-                                        self.punct_model.lock().unwrap_or_else(|e| e.into_inner());
-                                    if punct_guard.is_none() {
-                                        info!(
-                                            "Loading punctuation model '{}' (first use)...",
-                                            punct_model_id
-                                        );
-                                        match transcribe_rs::punct::PunctModel::new(&model_dir) {
-                                            Ok(model) => {
-                                                *punct_guard = Some(model);
-                                            }
-                                            Err(e) => {
-                                                warn!("Failed to load punctuation model: {}", e);
-                                            }
-                                        }
-                                    }
-                                    if let Some(ref mut punct) = *punct_guard {
-                                        let punctuated = punct.add_punctuation(&filtered_result);
-                                        if punctuated != filtered_result {
-                                            info!(
-                                                "Auto-punctuation applied: [{}] -> [{}]",
-                                                filtered_result, punctuated
-                                            );
-                                        }
-                                        punctuated
-                                    } else {
-                                        filtered_result
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("Failed to locate punctuation model directory: {}", e);
-                                    filtered_result
-                                }
-                            }
-                        } else {
-                            filtered_result
-                        }
-                    } else {
-                        filtered_result
-                    }
-                } else {
-                    filtered_result
-                }
-            }
-        } else {
-            filtered_result
-        };
+        // Punctuation is produced natively by the GGUF model; there is no longer
+        // a standalone CT-Transformer punctuation pass.
+        let final_result = filtered_result;
 
         let et = std::time::Instant::now();
         let translation_note = if settings.translate_to_english {
@@ -917,6 +679,10 @@ impl TranscriptionManager {
 
     /// Try to apply punctuation non-blockingly. Returns `None` if model not loaded or busy.
     pub fn try_add_punctuation(&self, text: &str) -> Option<String> {
+        // GGUF models emit punctuation natively, so there is no standalone
+        // punctuation model to run here. If the transcript already looks
+        // punctuated we return it unchanged; otherwise we have nothing to add
+        // and signal "no change" with `None` (callers fall back to the raw text).
         let settings = get_settings(&self.app_handle);
         if !settings.punctuation_enabled {
             return None;
@@ -924,50 +690,12 @@ impl TranscriptionManager {
         if should_skip_auto_punctuation(text) {
             return Some(text.to_string());
         }
-        if let Ok(mut guard) = self.punct_model.try_lock() {
-            if let Some(ref mut punct) = *guard {
-                return Some(punct.add_punctuation(text));
-            }
-        }
         None
     }
 
-    /// Pre-load the punctuation model so it's ready when needed.
-    pub fn ensure_punct_model_loaded(&self) {
-        let settings = get_settings(&self.app_handle);
-        if !settings.punctuation_enabled {
-            return;
-        }
-        let punct_model_id = &settings.punctuation_model;
-        if punct_model_id.is_empty() {
-            return;
-        }
-        let model_info = match self.model_manager.get_model_info(punct_model_id) {
-            Some(info) if info.is_downloaded => info,
-            _ => return,
-        };
-        let model_dir = match self.model_manager.get_model_path(punct_model_id) {
-            Ok(dir) => dir,
-            Err(_) => return,
-        };
-        let mut punct_guard = self.punct_model.lock().unwrap_or_else(|e| e.into_inner());
-        if punct_guard.is_some() {
-            return;
-        }
-        info!("Pre-loading punctuation model for realtime preview...");
-        match transcribe_rs::punct::PunctModel::new(&model_dir) {
-            Ok(model) => {
-                *punct_guard = Some(model);
-                info!(
-                    "Punctuation model '{}' pre-loaded successfully",
-                    model_info.name
-                );
-            }
-            Err(e) => {
-                warn!("Failed to pre-load punctuation model: {}", e);
-            }
-        }
-    }
+    /// Retained for API compatibility. Punctuation now comes from the GGUF model
+    /// itself, so there is no separate model to preload — this is a no-op.
+    pub fn ensure_punct_model_loaded(&self) {}
 
     /// Non-blocking transcription for realtime preview.
     /// Returns `None` immediately if the engine is busy, not loaded, or audio is empty.
@@ -985,34 +713,20 @@ impl TranscriptionManager {
         self.engine_in_use.store(true, Ordering::Release);
         drop(engine_guard);
 
+        let run_options = match &engine {
+            LoadedEngine::TranscribeCpp(c) => RunOptions {
+                timestamps: c.max_timestamp_kind,
+                ..Default::default()
+            },
+        };
+
         let result = catch_unwind(AssertUnwindSafe(
-            || -> Result<transcribe_rs::TranscriptionResult> {
-                let opts = TranscribeOptions::default();
+            || -> Result<transcribe_cpp::Transcript> {
                 match &mut engine {
-                    LoadedEngine::Whisper(e) => e
-                        .transcribe(&audio, &opts)
-                        .map_err(|e| anyhow::anyhow!("Whisper realtime failed: {}", e)),
-                    LoadedEngine::Parakeet(e) => e
-                        .transcribe(&audio, &opts)
-                        .map_err(|e| anyhow::anyhow!("Parakeet realtime failed: {}", e)),
-                    LoadedEngine::Moonshine(e) => e
-                        .transcribe(&audio, &opts)
-                        .map_err(|e| anyhow::anyhow!("Moonshine realtime failed: {}", e)),
-                    LoadedEngine::MoonshineStreaming(e) => e
-                        .transcribe(&audio, &opts)
-                        .map_err(|e| anyhow::anyhow!("MoonshineStreaming realtime failed: {}", e)),
-                    LoadedEngine::SenseVoice(e) => e
-                        .transcribe(&audio, &opts)
-                        .map_err(|e| anyhow::anyhow!("SenseVoice realtime failed: {}", e)),
-                    LoadedEngine::Paraformer(e) => e
-                        .transcribe(&audio, &opts)
-                        .map_err(|e| anyhow::anyhow!("Paraformer realtime failed: {}", e)),
-                    LoadedEngine::ZipformerTransducer(e) => e
-                        .transcribe(&audio, &opts)
-                        .map_err(|e| anyhow::anyhow!("ZipformerTransducer realtime failed: {}", e)),
-                    LoadedEngine::ZipformerCtc(e) => e
-                        .transcribe(&audio, &opts)
-                        .map_err(|e| anyhow::anyhow!("ZipformerCtc realtime failed: {}", e)),
+                    LoadedEngine::TranscribeCpp(c) => c
+                        .session
+                        .run(&audio, &run_options)
+                        .map_err(|e| anyhow::anyhow!("transcribe.cpp realtime failed: {}", e)),
                 }
             },
         ));
@@ -1075,37 +789,10 @@ impl Drop for TranscriptionManager {
 
 /// Apply the user's accelerator preferences to the transcribe-rs global atomics.
 /// Called on startup and whenever the user changes the setting.
-pub fn apply_accelerator_settings(app: &tauri::AppHandle) {
-    use transcribe_rs::accel;
-
-    let settings = get_settings(app);
-
-    let whisper_pref = match settings.whisper_accelerator {
-        crate::settings::WhisperAcceleratorSetting::Auto => accel::WhisperAccelerator::Auto,
-        crate::settings::WhisperAcceleratorSetting::Cpu => accel::WhisperAccelerator::CpuOnly,
-        crate::settings::WhisperAcceleratorSetting::Gpu => accel::WhisperAccelerator::Gpu,
-    };
-    accel::set_whisper_accelerator(whisper_pref);
-    accel::set_whisper_gpu_device(settings.whisper_gpu_device);
-    info!(
-        "Whisper accelerator set to: {:?}, gpu_device: {}",
-        settings.whisper_accelerator,
-        if settings.whisper_gpu_device == -1 {
-            "auto".to_string()
-        } else {
-            settings.whisper_gpu_device.to_string()
-        }
-    );
-
-    let ort_pref = match settings.ort_accelerator {
-        crate::settings::OrtAcceleratorSetting::Auto => accel::OrtAccelerator::Auto,
-        crate::settings::OrtAcceleratorSetting::Cpu => accel::OrtAccelerator::CpuOnly,
-        crate::settings::OrtAcceleratorSetting::Cuda => accel::OrtAccelerator::Cuda,
-        crate::settings::OrtAcceleratorSetting::DirectMl => accel::OrtAccelerator::DirectMl,
-        crate::settings::OrtAcceleratorSetting::Rocm => accel::OrtAccelerator::Rocm,
-    };
-    accel::set_ort_accelerator(ort_pref);
-    info!("ORT accelerator set to: {:?}", settings.ort_accelerator);
+pub fn apply_accelerator_settings(_app: &tauri::AppHandle) {
+    // transcribe.cpp selects its compute backend at model-load time (Metal on
+    // macOS via the "metal" feature); there is no global accelerator toggle to
+    // apply here, so this is a no-op retained for call-site compatibility.
 }
 
 #[derive(Serialize, Clone, Debug, specta::Type)]
@@ -1119,13 +806,17 @@ static GPU_DEVICES: std::sync::OnceLock<Vec<GpuDeviceOption>> = std::sync::OnceL
 
 fn cached_gpu_devices() -> &'static [GpuDeviceOption] {
     GPU_DEVICES.get_or_init(|| {
-        use transcribe_rs::whisper_cpp::gpu::list_gpu_devices;
-        list_gpu_devices()
+        transcribe_cpp::devices()
             .into_iter()
+            .filter(|d| d.device_type != DeviceType::Cpu)
             .map(|d| GpuDeviceOption {
-                id: d.id,
-                name: d.name,
-                total_vram_mb: d.total_vram / (1024 * 1024),
+                id: d.index.map(|i| i as i32).unwrap_or(-1),
+                name: if d.description.is_empty() {
+                    d.name
+                } else {
+                    d.description
+                },
+                total_vram_mb: (d.memory_total / (1024 * 1024)) as usize,
             })
             .collect()
     })
@@ -1140,18 +831,12 @@ pub struct AvailableAccelerators {
 
 /// Return which accelerators are compiled into this build.
 pub fn get_available_accelerators() -> AvailableAccelerators {
-    use transcribe_rs::accel::OrtAccelerator;
-
-    let ort_options: Vec<String> = OrtAccelerator::available()
-        .into_iter()
-        .map(|a| a.to_string())
-        .collect();
-
-    let whisper_options = vec!["auto".to_string(), "cpu".to_string(), "gpu".to_string()];
-
+    // transcribe.cpp uses a single unified backend chosen at load time; the
+    // legacy whisper/ORT accelerator toggles no longer apply. We still surface
+    // the discovered GPU devices for display.
     AvailableAccelerators {
-        whisper: whisper_options,
-        ort: ort_options,
+        whisper: vec!["auto".to_string(), "cpu".to_string(), "gpu".to_string()],
+        ort: Vec::new(),
         gpu_devices: cached_gpu_devices().to_vec(),
     }
 }

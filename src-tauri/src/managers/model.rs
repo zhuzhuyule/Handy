@@ -17,46 +17,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EngineType {
-    Whisper,
-    Parakeet,
-    Moonshine,
-    MoonshineStreaming,
-    SenseVoice,
-    Paraformer,
-    ZipformerTransducer,
-    ZipformerCtc,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SherpaOnnxAsrMode {
-    Streaming,
-    Offline,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SherpaOnnxAsrFamily {
-    /// Online transducer (e.g. streaming zipformer) via encoder/decoder/joiner.
-    Transducer,
-    /// Online zipformer2 CTC models (streaming) via a single `*.onnx` file.
-    Zipformer2Ctc,
-    /// Online paraformer via encoder/decoder.
-    Paraformer,
-    /// Offline SenseVoice via `model.onnx`.
-    SenseVoice,
-    /// Offline FireRedASR via encoder/decoder.
-    FireRedAsr,
-    /// Zipformer Transducer.
-    ZipformerTransducer,
-    /// Zipformer CTC.
-    ZipformerCtc,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SherpaOnnxModelSpec {
-    pub mode: SherpaOnnxAsrMode,
-    pub family: SherpaOnnxAsrFamily,
-    /// Whether to prefer int8 variants when searching for model files.
-    pub prefer_int8: bool,
+    /// Unified transcribe.cpp (ggml / GGUF) engine — the only local engine.
+    TranscribeCpp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,8 +34,6 @@ pub struct ModelInfo {
     pub partial_size: u64,
     pub is_directory: bool,
     pub engine_type: EngineType,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sherpa: Option<SherpaOnnxModelSpec>,
     pub accuracy_score: f32, // 0.0 to 1.0, higher is more accurate
     pub speed_score: f32,    // 0.0 to 1.0, higher is faster
     #[serde(default)]
@@ -93,14 +53,18 @@ struct UserModelEntry {
     url: String,
     size_mb: u64,
     is_directory: bool,
+    #[serde(default = "default_engine_type")]
     engine_type: EngineType,
-    sherpa: Option<SherpaOnnxModelSpec>,
     accuracy_score: f32,
     speed_score: f32,
     #[serde(default)]
     tags: Option<Vec<String>>,
     #[serde(default)]
     sha256: Option<String>,
+}
+
+fn default_engine_type() -> EngineType {
+    EngineType::TranscribeCpp
 }
 
 impl UserModelEntry {
@@ -117,7 +81,6 @@ impl UserModelEntry {
             partial_size: 0,
             is_directory: self.is_directory,
             engine_type: self.engine_type,
-            sherpa: self.sherpa,
             accuracy_score: self.accuracy_score,
             speed_score: self.speed_score,
             tags: self.tags,
@@ -238,58 +201,9 @@ impl ModelManager {
         s.to_string()
     }
 
-    fn infer_sherpa_spec_from_name(name: &str) -> Option<SherpaOnnxModelSpec> {
-        let lower = name.to_lowercase();
-        let prefer_int8 = lower.contains("int8");
-        let mode = if lower.contains("streaming") {
-            SherpaOnnxAsrMode::Streaming
-        } else {
-            SherpaOnnxAsrMode::Offline
-        };
-        let family = if lower.contains("sense-voice") {
-            SherpaOnnxAsrFamily::SenseVoice
-        } else if lower.contains("fire-red-asr") {
-            SherpaOnnxAsrFamily::FireRedAsr
-        } else if lower.contains("ctc") {
-            SherpaOnnxAsrFamily::Zipformer2Ctc
-        } else if lower.contains("paraformer") {
-            SherpaOnnxAsrFamily::Paraformer
-        } else if lower.contains("zipformer-ctc") {
-            SherpaOnnxAsrFamily::ZipformerCtc
-        } else if lower.contains("zipformer") {
-            SherpaOnnxAsrFamily::ZipformerTransducer
-        } else {
-            SherpaOnnxAsrFamily::Transducer
-        };
-        Some(SherpaOnnxModelSpec {
-            mode,
-            family,
-            prefer_int8,
-        })
-    }
-
-    fn infer_engine_type_from_name(name: &str) -> EngineType {
-        let lower = name.to_lowercase();
-        if lower.contains("whisper") || lower.contains("ggml") {
-            EngineType::Whisper
-        } else if lower.contains("parakeet") {
-            EngineType::Parakeet
-        } else if lower.contains("moonshine") && lower.contains("streaming") {
-            EngineType::MoonshineStreaming
-        } else if lower.contains("moonshine") {
-            EngineType::Moonshine
-        } else if lower.contains("sense-voice") || lower.contains("sensevoice") {
-            EngineType::SenseVoice
-        } else if lower.contains("zipformer-ctc")
-            || (lower.contains("zipformer") && lower.contains("ctc"))
-        {
-            EngineType::ZipformerCtc
-        } else if lower.contains("zipformer") {
-            EngineType::ZipformerTransducer
-        } else {
-            // Default to Paraformer for other sherpa models
-            EngineType::Paraformer
-        }
+    fn infer_engine_type_from_name(_name: &str) -> EngineType {
+        // Every local model now runs through the unified transcribe.cpp engine.
+        EngineType::TranscribeCpp
     }
 
     pub fn new(app_handle: &AppHandle) -> Result<Self> {
@@ -308,485 +222,87 @@ impl ModelManager {
 
         let mut available_models = HashMap::new();
 
-        // TODO this should be read from a JSON file or something..
-        available_models.insert(
-            "small".to_string(),
-            ModelInfo {
-                id: "small".to_string(),
-                name: "Whisper Small".to_string(),
-                description: "models.small.description".to_string(),
-                filename: "ggml-small.bin".to_string(),
-                url: Some("https://blob.handy.computer/ggml-small.bin".to_string()),
-                size_mb: 487,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: false,
-                engine_type: EngineType::Whisper,
-                sherpa: None,
-                accuracy_score: 0.60,
-                speed_score: 0.85,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
+        // Built-in GGUF models served via transcribe.cpp. Each is a single
+        // `.gguf` file downloaded from a handy-computer Hugging Face repo.
+        let mut add_builtin = |id: &str,
+                               name: &str,
+                               repo: &str,
+                               file: &str,
+                               size_mb: u64,
+                               acc: f32,
+                               spd: f32,
+                               tags: Option<Vec<String>>| {
+            available_models.insert(
+                id.to_string(),
+                ModelInfo {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    description: format!("models.{}.description", id),
+                    filename: file.to_string(),
+                    url: Some(format!(
+                        "https://huggingface.co/handy-computer/{}/resolve/main/{}",
+                        repo, file
+                    )),
+                    size_mb,
+                    is_downloaded: false,
+                    is_downloading: false,
+                    partial_size: 0,
+                    is_directory: false,
+                    engine_type: EngineType::TranscribeCpp,
+                    accuracy_score: acc,
+                    speed_score: spd,
+                    tags,
+                    is_default: true,
+                    sha256: None,
+                },
+            );
+        };
 
-        // Add downloadable models
-        available_models.insert(
-            "medium".to_string(),
-            ModelInfo {
-                id: "medium".to_string(),
-                name: "Whisper Medium".to_string(),
-                description: "models.medium.description".to_string(),
-                filename: "whisper-medium-q4_1.bin".to_string(),
-                url: Some("https://blob.handy.computer/whisper-medium-q4_1.bin".to_string()),
-                size_mb: 492, // Approximate size
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: false,
-                engine_type: EngineType::Whisper,
-                sherpa: None,
-                accuracy_score: 0.75,
-                speed_score: 0.60,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
+        add_builtin(
+            "whisper-tiny",
+            "Whisper Tiny",
+            "whisper-tiny-gguf",
+            "whisper-tiny-Q5_K_M.gguf",
+            50,
+            0.50,
+            0.98,
+            None,
         );
-
-        available_models.insert(
-            "turbo".to_string(),
-            ModelInfo {
-                id: "turbo".to_string(),
-                name: "Whisper Turbo".to_string(),
-                description: "models.turbo.description".to_string(),
-                filename: "ggml-large-v3-turbo.bin".to_string(),
-                url: Some("https://blob.handy.computer/ggml-large-v3-turbo.bin".to_string()),
-                size_mb: 1600, // Approximate size
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: false,
-                engine_type: EngineType::Whisper,
-                sherpa: None,
-                accuracy_score: 0.80,
-                speed_score: 0.40,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
+        add_builtin(
+            "whisper-base",
+            "Whisper Base",
+            "whisper-base-gguf",
+            "whisper-base-Q5_K_M.gguf",
+            90,
+            0.60,
+            0.92,
+            None,
         );
-
-        available_models.insert(
-            "large".to_string(),
-            ModelInfo {
-                id: "large".to_string(),
-                name: "Whisper Large".to_string(),
-                description: "models.large.description".to_string(),
-                filename: "ggml-large-v3-q5_0.bin".to_string(),
-                url: Some("https://blob.handy.computer/ggml-large-v3-q5_0.bin".to_string()),
-                size_mb: 1100, // Approximate size
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: false,
-                engine_type: EngineType::Whisper,
-                sherpa: None,
-                accuracy_score: 0.85,
-                speed_score: 0.30,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
+        add_builtin(
+            "whisper-small",
+            "Whisper Small",
+            "whisper-small-gguf",
+            "whisper-small-Q5_K_M.gguf",
+            280,
+            0.70,
+            0.80,
+            None,
         );
-
-        available_models.insert(
-            "breeze-asr".to_string(),
-            ModelInfo {
-                id: "breeze-asr".to_string(),
-                name: "Breeze ASR".to_string(),
-                description: "models.breeze-asr.description".to_string(),
-                filename: "breeze-asr-q5_k.bin".to_string(),
-                url: Some("https://blob.handy.computer/breeze-asr-q5_k.bin".to_string()),
-                size_mb: 1080,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: false,
-                engine_type: EngineType::Whisper,
-                sherpa: None,
-                accuracy_score: 0.85,
-                speed_score: 0.35,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        // Add NVIDIA Parakeet models (directory-based)
-        available_models.insert(
-            "parakeet-tdt-0.6b-v2".to_string(),
-            ModelInfo {
-                id: "parakeet-tdt-0.6b-v2".to_string(),
-                name: "Parakeet V2".to_string(),
-                description: "models.parakeet-tdt-0.6b-v2.description".to_string(),
-                filename: "parakeet-tdt-0.6b-v2-int8".to_string(), // Directory name
-                url: Some("https://blob.handy.computer/parakeet-v2-int8.tar.gz".to_string()),
-                size_mb: 473, // Approximate size for int8 quantized model
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::Parakeet,
-                sherpa: None,
-                accuracy_score: 0.85,
-                speed_score: 0.85,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        available_models.insert(
-            "parakeet-tdt-0.6b-v3".to_string(),
-            ModelInfo {
-                id: "parakeet-tdt-0.6b-v3".to_string(),
-                name: "Parakeet V3".to_string(),
-                description: "models.parakeet-tdt-0.6b-v3.description".to_string(),
-                filename: "parakeet-tdt-0.6b-v3-int8".to_string(), // Directory name
-                url: Some("https://blob.handy.computer/parakeet-v3-int8.tar.gz".to_string()),
-                size_mb: 478, // Approximate size for int8 quantized model
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::Parakeet,
-                sherpa: None,
-                accuracy_score: 0.80,
-                speed_score: 0.85,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        // Moonshine models
-        available_models.insert(
-            "moonshine-base".to_string(),
-            ModelInfo {
-                id: "moonshine-base".to_string(),
-                name: "Moonshine Base".to_string(),
-                description: "models.moonshine-base.description".to_string(),
-                filename: "moonshine-base".to_string(),
-                url: Some("https://blob.handy.computer/moonshine-base.tar.gz".to_string()),
-                size_mb: 58,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::Moonshine,
-                sherpa: None,
-                accuracy_score: 0.70,
-                speed_score: 0.90,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        available_models.insert(
-            "moonshine-tiny-streaming-en".to_string(),
-            ModelInfo {
-                id: "moonshine-tiny-streaming-en".to_string(),
-                name: "Moonshine V2 Tiny".to_string(),
-                description: "models.moonshine-tiny-streaming-en.description".to_string(),
-                filename: "moonshine-tiny-streaming-en".to_string(),
-                url: Some(
-                    "https://blob.handy.computer/moonshine-tiny-streaming-en.tar.gz".to_string(),
-                ),
-                size_mb: 31,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::MoonshineStreaming,
-                sherpa: None,
-                accuracy_score: 0.55,
-                speed_score: 0.95,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        available_models.insert(
-            "moonshine-small-streaming-en".to_string(),
-            ModelInfo {
-                id: "moonshine-small-streaming-en".to_string(),
-                name: "Moonshine V2 Small".to_string(),
-                description: "models.moonshine-small-streaming-en.description".to_string(),
-                filename: "moonshine-small-streaming-en".to_string(),
-                url: Some(
-                    "https://blob.handy.computer/moonshine-small-streaming-en.tar.gz".to_string(),
-                ),
-                size_mb: 100,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::MoonshineStreaming,
-                sherpa: None,
-                accuracy_score: 0.65,
-                speed_score: 0.90,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        available_models.insert(
-            "moonshine-medium-streaming-en".to_string(),
-            ModelInfo {
-                id: "moonshine-medium-streaming-en".to_string(),
-                name: "Moonshine V2 Medium".to_string(),
-                description: "models.moonshine-medium-streaming-en.description".to_string(),
-                filename: "moonshine-medium-streaming-en".to_string(),
-                url: Some(
-                    "https://blob.handy.computer/moonshine-medium-streaming-en.tar.gz".to_string(),
-                ),
-                size_mb: 192,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::MoonshineStreaming,
-                sherpa: None,
-                accuracy_score: 0.75,
-                speed_score: 0.80,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        // Punctuation (post-processing): zh+en mixed.
-        available_models.insert(
-            "punct-zh-en-ct-transformer-2024-04-12-int8".to_string(),
-            ModelInfo {
-                id: "punct-zh-en-ct-transformer-2024-04-12-int8".to_string(),
-                name: "Punctuation Chinese + English".to_string(),
-                description: "models.punct-zh-en-ct-transformer-2024-04-12-int8.description"
-                    .to_string(),
-                filename: "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8"
-                    .to_string(),
-                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2".to_string()),
-                size_mb: 62,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::Paraformer,
-                sherpa: None,
-                accuracy_score: 0.80,
-                speed_score: 0.95,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        available_models.insert(
-            "punct-zh-en-ct-transformer-2024-04-12".to_string(),
-            ModelInfo {
-                id: "punct-zh-en-ct-transformer-2024-04-12".to_string(),
-                name: "Punctuation Chinese + English (Large)".to_string(),
-                description: "models.punct-zh-en-ct-transformer-2024-04-12.description".to_string(),
-                filename: "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12"
-                    .to_string(),
-                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12.tar.bz2".to_string()),
-                size_mb: 266,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::Paraformer,
-                sherpa: None,
-                accuracy_score: 0.88,
-                speed_score: 0.70,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        available_models.insert(
-            "sherpa-sensevoice-zh-en-ja-ko-yue-int8-2025-09-09".to_string(),
-            ModelInfo {
-                id: "sherpa-sensevoice-zh-en-ja-ko-yue-int8-2025-09-09".to_string(),
-                name: "Sherpa SenseVoice Multilingual".to_string(),
-                description:
-                    "models.sherpa-sensevoice-zh-en-ja-ko-yue-int8-2025-09-09.description"
-                        .to_string(),
-                filename: "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09".to_string(),
-                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2".to_string()),
-                size_mb: 166,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::SenseVoice,
-                sherpa: Some(SherpaOnnxModelSpec {
-                    mode: SherpaOnnxAsrMode::Offline,
-                    family: SherpaOnnxAsrFamily::SenseVoice,
-                    prefer_int8: true,
-                }),
-                accuracy_score: 0.87,
-                speed_score: 0.75,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        // Offline Paraformer (non-streaming): Chinese / trilingual.
-        available_models.insert(
-            "sherpa-paraformer-zh-int8-2025-10-07".to_string(),
-            ModelInfo {
-                id: "sherpa-paraformer-zh-int8-2025-10-07".to_string(),
-                name: "Sherpa Paraformer Chinese".to_string(),
-                description: "models.sherpa-paraformer-zh-int8-2025-10-07.description".to_string(),
-                filename: "sherpa-onnx-paraformer-zh-int8-2025-10-07".to_string(),
-                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-int8-2025-10-07.tar.bz2".to_string()),
-                size_mb: 218,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::Paraformer,
-                sherpa: Some(SherpaOnnxModelSpec {
-                    mode: SherpaOnnxAsrMode::Offline,
-                    family: SherpaOnnxAsrFamily::Paraformer,
-                    prefer_int8: true,
-                }),
-                accuracy_score: 0.82,
-                speed_score: 0.95,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        available_models.insert(
-            "sherpa-paraformer-zh-small-2024-03-09".to_string(),
-            ModelInfo {
-                id: "sherpa-paraformer-zh-small-2024-03-09".to_string(),
-                name: "Sherpa Paraformer Chinese (Small)".to_string(),
-                description: "models.sherpa-paraformer-zh-small-2024-03-09.description".to_string(),
-                filename: "sherpa-onnx-paraformer-zh-small-2024-03-09".to_string(),
-                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-small-2024-03-09.tar.bz2".to_string()),
-                size_mb: 75,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::Paraformer,
-                sherpa: Some(SherpaOnnxModelSpec {
-                    mode: SherpaOnnxAsrMode::Offline,
-                    family: SherpaOnnxAsrFamily::Paraformer,
-                    prefer_int8: false,
-                }),
-                accuracy_score: 0.78,
-                speed_score: 0.97,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        available_models.insert(
-            "sherpa-paraformer-trilingual-zh-cantonese-en".to_string(),
-            ModelInfo {
-                id: "sherpa-paraformer-trilingual-zh-cantonese-en".to_string(),
-                name: "Sherpa Paraformer Zh+Yue+En".to_string(),
-                description: "models.sherpa-paraformer-trilingual-zh-cantonese-en.description"
-                    .to_string(),
-                filename: "sherpa-onnx-paraformer-trilingual-zh-cantonese-en".to_string(),
-                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-trilingual-zh-cantonese-en.tar.bz2".to_string()),
-                size_mb: 1011,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::Paraformer,
-                sherpa: Some(SherpaOnnxModelSpec {
-                    mode: SherpaOnnxAsrMode::Offline,
-                    family: SherpaOnnxAsrFamily::Paraformer,
-                    prefer_int8: false,
-                }),
-                accuracy_score: 0.80,
-                speed_score: 0.93,
-                tags: None,
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        // Zipformer Transducer: Chinese + English
-        available_models.insert(
-            "sherpa-zipformer-zh-en-small-2023-11-22".to_string(),
-            ModelInfo {
-                id: "sherpa-zipformer-zh-en-small-2023-11-22".to_string(),
-                name: "Sherpa Zipformer Transducer (Small)".to_string(),
-                description: "models.sherpa-zipformer-zh-en-small-2023-11-22.description".to_string(),
-                filename: "sherpa-onnx-zipformer-zh-en-2023-11-22".to_string(),
-                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2".to_string()),
-                size_mb: 290,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::ZipformerTransducer,
-                sherpa: Some(SherpaOnnxModelSpec {
-                    mode: SherpaOnnxAsrMode::Offline,
-                    family: SherpaOnnxAsrFamily::ZipformerTransducer,
-                    prefer_int8: true, // Use int8 parameters if possible
-                }),
-                accuracy_score: 0.88,
-                speed_score: 0.87,
-                tags: Some(vec!["zh".to_string(), "en".to_string()]),
-                is_default: true,
-                sha256: None,
-            },
-        );
-
-        // Zipformer CTC: Chinese (Fast)
-        available_models.insert(
-            "sherpa-zipformer-ctc-small-zh-int8-2025-07-16".to_string(),
-            ModelInfo {
-                id: "sherpa-zipformer-ctc-small-zh-int8-2025-07-16".to_string(),
-                name: "Sherpa Zipformer CTC Chinese (Small & Fast)".to_string(),
-                description: "models.sherpa-zipformer-ctc-small-zh-int8-2025-07-16.description".to_string(),
-                filename: "sherpa-onnx-zipformer-ctc-small-zh-int8-2025-07-16".to_string(),
-                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ctc-small-zh-int8-2025-07-16.tar.bz2".to_string()),
-                size_mb: 48,
-                is_downloaded: false,
-                is_downloading: false,
-                partial_size: 0,
-                is_directory: true,
-                engine_type: EngineType::ZipformerCtc,
-                sherpa: Some(SherpaOnnxModelSpec {
-                    mode: SherpaOnnxAsrMode::Offline,
-                    family: SherpaOnnxAsrFamily::ZipformerCtc,
-                    prefer_int8: true,
-                }),
-                accuracy_score: 0.83,
-                speed_score: 0.98,
-                tags: Some(vec!["zh".to_string()]),
-                is_default: true,
-                sha256: None,
-            },
+        add_builtin(
+            "sensevoice-small",
+            "SenseVoice Small",
+            "sensevoice-small-gguf",
+            "sensevoice-small-Q8_0.gguf",
+            250,
+            0.82,
+            0.90,
+            Some(vec![
+                "zh".to_string(),
+                "en".to_string(),
+                "ja".to_string(),
+                "ko".to_string(),
+                "yue".to_string(),
+            ]),
         );
 
         // Merge user-provided catalog entries.
@@ -886,7 +402,6 @@ impl ModelManager {
             size_mb: 0,
             is_directory,
             engine_type: Self::infer_engine_type_from_name(&base_name),
-            sherpa: Self::infer_sherpa_spec_from_name(&base_name),
             accuracy_score: 0.8,
             speed_score: 0.8,
             tags,
@@ -1024,26 +539,41 @@ impl ModelManager {
     }
 
     fn auto_select_model_if_needed(&self) -> Result<()> {
-        // Check if we have a selected model in settings
         let settings = get_settings(&self.app_handle);
 
-        // If no model is selected or selected model is empty
-        if settings.selected_model.is_empty() {
-            // Find the first available (downloaded) model
+        // The selection is valid only if it still exists in the catalog. After
+        // the transcribe.cpp migration, legacy ids (e.g. "small", "parakeet-*")
+        // no longer exist, so fall back to a default rather than leaving a
+        // dangling selection that would fail to load.
+        let pick = {
             let models = self.available_models.lock().unwrap();
-            if let Some(available_model) = models.values().find(|model| model.is_downloaded) {
-                info!(
-                    "Auto-selecting model: {} ({})",
-                    available_model.id, available_model.name
-                );
-
-                // Update settings with the selected model
-                let mut updated_settings = settings;
-                updated_settings.selected_model = available_model.id.clone();
-                write_settings(&self.app_handle, updated_settings);
-
-                info!("Successfully auto-selected model: {}", available_model.id);
+            let selection_valid = !settings.selected_model.is_empty()
+                && models.contains_key(&settings.selected_model);
+            if selection_valid {
+                None
+            } else {
+                // Prefer a downloaded model, then the default whisper-tiny, then
+                // any known model.
+                models
+                    .values()
+                    .find(|model| model.is_downloaded)
+                    .map(|m| m.id.clone())
+                    .or_else(|| {
+                        if models.contains_key("whisper-tiny") {
+                            Some("whisper-tiny".to_string())
+                        } else {
+                            models.keys().next().cloned()
+                        }
+                    })
             }
+        };
+
+        if let Some(model_id) = pick {
+            info!("Auto-selecting model: {}", model_id);
+            let mut updated_settings = settings;
+            updated_settings.selected_model = model_id.clone();
+            write_settings(&self.app_handle, updated_settings);
+            info!("Successfully auto-selected model: {}", model_id);
         }
 
         Ok(())

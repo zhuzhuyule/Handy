@@ -361,16 +361,7 @@ export type ShortcutBinding = z.infer<typeof ShortcutBindingSchema>;
 export type ShortcutBindingsMap = z.infer<typeof ShortcutBindingsMapSchema>;
 export type Settings = z.infer<typeof SettingsSchema>;
 
-export const EngineTypeSchema = z.enum([
-  "Whisper",
-  "Parakeet",
-  "Moonshine",
-  "MoonshineStreaming",
-  "SenseVoice",
-  "Paraformer",
-  "ZipformerTransducer",
-  "ZipformerCtc",
-]);
+export const EngineTypeSchema = z.enum(["TranscribeCpp"]);
 export type EngineType = z.infer<typeof EngineTypeSchema>;
 
 export const ModelInfoSchema = z.object({

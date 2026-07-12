@@ -26,8 +26,11 @@ export const TranslateToEnglish: React.FC<TranslateToEnglishProps> = React.memo(
     const currentModelInfo = models.find((model) => model.id === currentModel);
     const isUnsupportedModelId =
       currentModel && unsupportedTranslationModels.includes(currentModel);
+    // Translation to English is a Whisper-only capability. All models now share
+    // the transcribe.cpp engine, so detect Whisper via the model id.
     const isNonWhisperEngine =
-      currentModelInfo && currentModelInfo.engine_type !== "Whisper";
+      !!currentModelInfo &&
+      !currentModelInfo.id.toLowerCase().includes("whisper");
     const isDisabledTranslation =
       !currentModel ||
       !currentModelInfo ||

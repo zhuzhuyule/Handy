@@ -2,12 +2,14 @@
 
 import type { LanguageKey, TypeKey } from "./types";
 
-// Recommended model IDs for highlighting
+// Recommended model IDs (catalog slugs) for highlighting. Sourced from the
+// vendored catalog's `recommended` entries (recommended_rank order).
 export const RECOMMENDED_MODEL_IDS = new Set([
-  "sherpa-sensevoice-zh-en-ja-ko-yue-int8-2025-09-09",
-  "parakeet-tdt-0.6b-v3",
-  "sherpa-zipformer-zh-en-small",
-  "sherpa-paraformer-trilingual-zh-cantonese-en",
+  "parakeet-unified-en-0.6b",
+  "nemotron-3.5-asr-streaming-0.6b",
+  "canary-180m-flash",
+  "cohere-transcribe-03-2026",
+  "whisper-medium",
 ]);
 
 // All available language keys in display order

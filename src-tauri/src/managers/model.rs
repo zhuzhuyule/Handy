@@ -222,88 +222,12 @@ impl ModelManager {
 
         let mut available_models = HashMap::new();
 
-        // Built-in GGUF models served via transcribe.cpp. Each is a single
-        // `.gguf` file downloaded from a handy-computer Hugging Face repo.
-        let mut add_builtin = |id: &str,
-                               name: &str,
-                               repo: &str,
-                               file: &str,
-                               size_mb: u64,
-                               acc: f32,
-                               spd: f32,
-                               tags: Option<Vec<String>>| {
-            available_models.insert(
-                id.to_string(),
-                ModelInfo {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    description: format!("models.{}.description", id),
-                    filename: file.to_string(),
-                    url: Some(format!(
-                        "https://huggingface.co/handy-computer/{}/resolve/main/{}",
-                        repo, file
-                    )),
-                    size_mb,
-                    is_downloaded: false,
-                    is_downloading: false,
-                    partial_size: 0,
-                    is_directory: false,
-                    engine_type: EngineType::TranscribeCpp,
-                    accuracy_score: acc,
-                    speed_score: spd,
-                    tags,
-                    is_default: true,
-                    sha256: None,
-                },
-            );
-        };
-
-        add_builtin(
-            "whisper-tiny",
-            "Whisper Tiny",
-            "whisper-tiny-gguf",
-            "whisper-tiny-Q5_K_M.gguf",
-            50,
-            0.50,
-            0.98,
-            None,
-        );
-        add_builtin(
-            "whisper-base",
-            "Whisper Base",
-            "whisper-base-gguf",
-            "whisper-base-Q5_K_M.gguf",
-            90,
-            0.60,
-            0.92,
-            None,
-        );
-        add_builtin(
-            "whisper-small",
-            "Whisper Small",
-            "whisper-small-gguf",
-            "whisper-small-Q5_K_M.gguf",
-            280,
-            0.70,
-            0.80,
-            None,
-        );
-        add_builtin(
-            "sensevoice-small",
-            "SenseVoice Small",
-            "sensevoice-small-gguf",
-            "sensevoice-small-Q8_0.gguf",
-            250,
-            0.82,
-            0.90,
-            Some(vec![
-                "zh".to_string(),
-                "en".to_string(),
-                "ja".to_string(),
-                "ko".to_string(),
-                "yue".to_string(),
-            ]),
-        );
+        // Populate the built-in library from the vendored catalog. Each entry
+        // is a single-file GGUF model downloaded from a handy-computer Hugging
+        // Face repo through a direct resolve URL.
+        for model in crate::catalog::catalog_models() {
+            available_models.insert(model.id.clone(), model);
+        }
 
         // Merge user-provided catalog entries.
         if let Ok(user_entries) = Self::read_user_catalog(&user_catalog_path) {

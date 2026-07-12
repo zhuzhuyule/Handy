@@ -6,6 +6,7 @@ mod app_list;
 mod apple_intelligence;
 mod audio_feedback;
 pub mod audio_toolkit;
+mod catalog;
 mod cli;
 mod clipboard;
 mod commands;

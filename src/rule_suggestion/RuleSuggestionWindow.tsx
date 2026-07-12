@@ -140,8 +140,9 @@ export const RuleSuggestionWindow: React.FC<Props> = ({ payload }) => {
         添加后，下次在该窗口录音将自动应用此提示词。
       </Text>
       <Flex
-        gap="2"
+        gap="3"
         justify="end"
+        align="center"
         mt="auto"
         style={{ paddingTop: "var(--space-2)" }}
       >
@@ -155,7 +156,7 @@ export const RuleSuggestionWindow: React.FC<Props> = ({ payload }) => {
           这次不要
         </Button>
         <Button
-          variant="ghost"
+          variant="soft"
           color="gray"
           tabIndex={-1}
           disabled={busy}

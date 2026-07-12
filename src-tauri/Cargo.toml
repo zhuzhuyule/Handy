@@ -115,6 +115,9 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.
 objc2 = "0.5"
 core-foundation = "0.10"
 core-graphics = "0.24"
+# transcribe.cpp engine migration (plan B, Phase 0 spike) — GGUF/ggml engine
+# with Metal backend on macOS. Pinned to the version Handy 0.9.1 ships.
+transcribe-cpp = { version = "0.1.2", default-features = false, features = ["metal"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

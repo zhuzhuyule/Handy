@@ -229,6 +229,36 @@ impl ModelManager {
             available_models.insert(model.id.clone(), model);
         }
 
+        // Punctuation (post-processing): zh+en mixed. This is NOT an ASR engine
+        // — it is a standalone CT-Transformer model referenced by id through the
+        // punct path (transcribe-rs `punct` feature). The `punct-` id prefix is
+        // what the frontend uses to group it under "Punctuation". The
+        // `engine_type` is irrelevant here (it never goes through `load_model`),
+        // so we use the only variant that exists.
+        available_models.insert(
+            "punct-zh-en-ct-transformer-2024-04-12-int8".to_string(),
+            ModelInfo {
+                id: "punct-zh-en-ct-transformer-2024-04-12-int8".to_string(),
+                name: "Punctuation Chinese + English".to_string(),
+                description: "models.punct-zh-en-ct-transformer-2024-04-12-int8.description"
+                    .to_string(),
+                filename: "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8"
+                    .to_string(),
+                url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2".to_string()),
+                size_mb: 62,
+                is_downloaded: false,
+                is_downloading: false,
+                partial_size: 0,
+                is_directory: true,
+                engine_type: EngineType::TranscribeCpp,
+                accuracy_score: 0.80,
+                speed_score: 0.95,
+                tags: None,
+                is_default: true,
+                sha256: None,
+            },
+        );
+
         // Merge user-provided catalog entries.
         if let Ok(user_entries) = Self::read_user_catalog(&user_catalog_path) {
             for entry in user_entries {

@@ -1310,7 +1310,7 @@ fn default_multi_model_strategy() -> String {
 }
 
 fn default_punctuation_model() -> String {
-    "".to_string()
+    "punct-zh-en-ct-transformer-2024-04-12-int8".to_string()
 }
 
 fn default_favorite_transcription_models() -> Vec<String> {

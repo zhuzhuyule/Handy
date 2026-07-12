@@ -87,6 +87,10 @@ sha2 = "0.10"
 plist = "1.7"
 rayon = "1.10"
 uuid = { version = "1", features = ["v4", "serde"] }
+# Lightweight punctuation restoration (CT-Transformer, ONNX) — kept independent
+# of the ASR engine (which is transcribe.cpp). Only the `punct` feature is built
+# so no ASR engines are pulled in; `ort` is already in the dependency tree.
+transcribe-rs = { git = "https://github.com/zhuzhuyule/transcribe-rs", branch = "main", default-features = false, features = ["punct"] }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

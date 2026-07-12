@@ -127,6 +127,10 @@ pub struct TranscriptionManager {
     watcher_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
+    /// Standalone CT-Transformer punctuation model (transcribe-rs `punct`
+    /// feature). Independent of the ASR engine — restores punctuation on raw
+    /// transcripts from models that emit none (e.g. Moonshine).
+    punct_model: Arc<Mutex<Option<transcribe_rs::punct::PunctModel>>>,
     engine_in_use: Arc<AtomicBool>,
 }
 
@@ -153,6 +157,7 @@ impl TranscriptionManager {
             watcher_handle: Arc::new(Mutex::new(None)),
             is_loading: Arc::new(Mutex::new(false)),
             loading_condvar: Arc::new(Condvar::new()),
+            punct_model: Arc::new(Mutex::new(None)),
             engine_in_use: Arc::new(AtomicBool::new(false)),
         };
 
@@ -637,9 +642,73 @@ impl TranscriptionManager {
             &settings.custom_filler_words,
         );
 
-        // Punctuation is produced natively by the GGUF model; there is no longer
-        // a standalone CT-Transformer punctuation pass.
-        let final_result = filtered_result;
+        // Punctuation post-processing: when enabled, apply the standalone
+        // CT-Transformer punct model to format the text with proper punctuation.
+        // This is independent of the ASR engine — some models (e.g. Moonshine)
+        // emit no punctuation, so this restores it on the raw transcript. The
+        // punct model is lazy-loaded on first use; failures fall back to the
+        // unpunctuated text without crashing.
+        let final_result = if settings.punctuation_enabled && !filtered_result.trim().is_empty() {
+            if should_skip_auto_punctuation(&filtered_result) {
+                debug!(
+                    "Skipping auto-punctuation because transcript already looks punctuated: {}",
+                    filtered_result
+                );
+                filtered_result
+            } else {
+                let punct_model_id = &settings.punctuation_model;
+                if !punct_model_id.is_empty() {
+                    if let Some(model_info) = self.model_manager.get_model_info(punct_model_id) {
+                        if model_info.is_downloaded {
+                            match self.model_manager.get_model_path(punct_model_id) {
+                                Ok(model_dir) => {
+                                    let mut punct_guard =
+                                        self.punct_model.lock().unwrap_or_else(|e| e.into_inner());
+                                    if punct_guard.is_none() {
+                                        info!(
+                                            "Loading punctuation model '{}' (first use)...",
+                                            punct_model_id
+                                        );
+                                        match transcribe_rs::punct::PunctModel::new(&model_dir) {
+                                            Ok(model) => {
+                                                *punct_guard = Some(model);
+                                            }
+                                            Err(e) => {
+                                                warn!("Failed to load punctuation model: {}", e);
+                                            }
+                                        }
+                                    }
+                                    if let Some(ref mut punct) = *punct_guard {
+                                        let punctuated = punct.add_punctuation(&filtered_result);
+                                        if punctuated != filtered_result {
+                                            info!(
+                                                "Auto-punctuation applied: [{}] -> [{}]",
+                                                filtered_result, punctuated
+                                            );
+                                        }
+                                        punctuated
+                                    } else {
+                                        filtered_result
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Failed to locate punctuation model directory: {}", e);
+                                    filtered_result
+                                }
+                            }
+                        } else {
+                            filtered_result
+                        }
+                    } else {
+                        filtered_result
+                    }
+                } else {
+                    filtered_result
+                }
+            }
+        } else {
+            filtered_result
+        };
 
         let et = std::time::Instant::now();
         let translation_note = if settings.translate_to_english {
@@ -679,10 +748,6 @@ impl TranscriptionManager {
 
     /// Try to apply punctuation non-blockingly. Returns `None` if model not loaded or busy.
     pub fn try_add_punctuation(&self, text: &str) -> Option<String> {
-        // GGUF models emit punctuation natively, so there is no standalone
-        // punctuation model to run here. If the transcript already looks
-        // punctuated we return it unchanged; otherwise we have nothing to add
-        // and signal "no change" with `None` (callers fall back to the raw text).
         let settings = get_settings(&self.app_handle);
         if !settings.punctuation_enabled {
             return None;
@@ -690,12 +755,50 @@ impl TranscriptionManager {
         if should_skip_auto_punctuation(text) {
             return Some(text.to_string());
         }
+        if let Ok(mut guard) = self.punct_model.try_lock() {
+            if let Some(ref mut punct) = *guard {
+                return Some(punct.add_punctuation(text));
+            }
+        }
         None
     }
 
-    /// Retained for API compatibility. Punctuation now comes from the GGUF model
-    /// itself, so there is no separate model to preload — this is a no-op.
-    pub fn ensure_punct_model_loaded(&self) {}
+    /// Pre-load the punctuation model so it's ready when needed.
+    pub fn ensure_punct_model_loaded(&self) {
+        let settings = get_settings(&self.app_handle);
+        if !settings.punctuation_enabled {
+            return;
+        }
+        let punct_model_id = &settings.punctuation_model;
+        if punct_model_id.is_empty() {
+            return;
+        }
+        let model_info = match self.model_manager.get_model_info(punct_model_id) {
+            Some(info) if info.is_downloaded => info,
+            _ => return,
+        };
+        let model_dir = match self.model_manager.get_model_path(punct_model_id) {
+            Ok(dir) => dir,
+            Err(_) => return,
+        };
+        let mut punct_guard = self.punct_model.lock().unwrap_or_else(|e| e.into_inner());
+        if punct_guard.is_some() {
+            return;
+        }
+        info!("Pre-loading punctuation model for realtime preview...");
+        match transcribe_rs::punct::PunctModel::new(&model_dir) {
+            Ok(model) => {
+                *punct_guard = Some(model);
+                info!(
+                    "Punctuation model '{}' pre-loaded successfully",
+                    model_info.name
+                );
+            }
+            Err(e) => {
+                warn!("Failed to pre-load punctuation model: {}", e);
+            }
+        }
+    }
 
     /// Non-blocking transcription for realtime preview.
     /// Returns `None` immediately if the engine is busy, not loaded, or audio is empty.

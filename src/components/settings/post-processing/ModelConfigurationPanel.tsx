@@ -138,6 +138,7 @@ const ModelCard: React.FC<{
               const result = isAsrModel
                 ? await invoke<string>("test_asr_model_inference", {
                     modelId: model.model_id,
+                    providerId: model.provider_id,
                   })
                 : await invoke<any>("test_post_process_model_inference", {
                     providerId: model.provider_id,

@@ -216,10 +216,58 @@ pub async fn test_post_process_model_inference(
 #[tauri::command]
 #[specta::specta]
 pub async fn test_asr_model_inference(
-    _app: AppHandle,
-    _model_id: String,
+    app: AppHandle,
+    model_id: String,
+    provider_id: String,
 ) -> Result<String, String> {
-    Ok("Test successful".to_string())
+    // A real test: send a short bundled speech clip to the ASR endpoint and
+    // require a non-empty transcription back. Reporting success without an
+    // actual inference call is misleading — the point is to verify the model
+    // returns recognized content, not merely that a button was clicked.
+    let settings = settings::get_settings(&app);
+    let provider = settings
+        .post_process_providers
+        .iter()
+        .find(|p| p.id == provider_id)
+        .cloned()
+        .ok_or_else(|| format!("ASR provider '{}' not found", provider_id))?;
+
+    // First enabled API key for this provider (None if the provider needs no auth).
+    let api_key = settings
+        .post_process_api_keys
+        .get(&provider_id)
+        .and_then(|keys| {
+            keys.iter()
+                .find(|k| k.enabled && !k.key.trim().is_empty())
+                .map(|k| k.key.clone())
+        });
+
+    // Bundled 16 kHz mono speech sample ("你好，这是一段语音识别测试。").
+    let audio: Vec<u8> = include_bytes!("../../resources/asr_test_sample.wav").to_vec();
+    let remote_model_id = model_id.clone();
+
+    // OnlineAsrClient is blocking (multipart upload) — run off the async runtime.
+    let outcome = tokio::task::spawn_blocking(move || {
+        let client =
+            crate::online_asr::OnlineAsrClient::new(16000, std::time::Duration::from_secs(30));
+        client.transcribe_audio_bytes(
+            &provider,
+            api_key,
+            &remote_model_id,
+            None, // let the model auto-detect language
+            &audio,
+            Some("asr_test_sample.wav"),
+            Some("audio/wav"),
+        )
+    })
+    .await
+    .map_err(|e| format!("测试任务失败: {}", e))?;
+
+    match outcome {
+        Ok(text) if !text.trim().is_empty() => Ok(text.trim().to_string()),
+        Ok(_) => Err("模型调用成功但未返回任何转录内容（识别结果为空）".to_string()),
+        Err(e) => Err(format!("识别失败: {}", e)),
+    }
 }
 
 #[cfg(test)]

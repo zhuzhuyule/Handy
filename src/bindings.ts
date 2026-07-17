@@ -959,9 +959,9 @@ async testPostProcessModelInference(modelId: string, providerId: string, cachedM
     else return { status: "error", error: e  as any };
 }
 },
-async testAsrModelInference(modelId: string) : Promise<Result<string, string>> {
+async testAsrModelInference(modelId: string, providerId: string) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("test_asr_model_inference", { modelId }) };
+    return { status: "ok", data: await TAURI_INVOKE("test_asr_model_inference", { modelId, providerId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
